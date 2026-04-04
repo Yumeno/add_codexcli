@@ -1,0 +1,12 @@
+# Claude Code personal settings (per-user, not project config)
+.claude/settings.local.json
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
+/tmp/
