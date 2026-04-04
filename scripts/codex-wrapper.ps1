@@ -69,61 +69,73 @@ function Cleanup {
 }
 
 try {
-    # Write prompt to file for stdin passing
+    # Write prompt to file for stdin passing (avoids cmdline length limits)
     $fullPrompt | Out-File -FilePath $promptFile -Encoding UTF8 -NoNewline
 
-    # --- Build codex arguments (-- separates options from prompt) ---
-    $codexArgs = @("exec", "-C", $WorkDir, "--skip-git-repo-check", "--ephemeral", "-o", $outFile, "--")
+    # --- Build codex arguments (prompt passed via stdin, not cmdline) ---
+    $codexArgs = @("exec", "-C", $WorkDir, "--skip-git-repo-check", "--ephemeral", "-o", $outFile)
 
     if (-not [string]::IsNullOrWhiteSpace($Model)) {
-        # Insert model before --
-        $codexArgs = @("exec", "-C", $WorkDir, "--skip-git-repo-check", "--ephemeral", "-o", $outFile, "-m", $Model, "--")
+        $codexArgs += @("-m", $Model)
     }
 
-    $codexArgs += $fullPrompt
+    # Use "-" to tell codex to read prompt from stdin
+    $codexArgs += "--"
+    $codexArgs += "-"
 
-    # --- Execute codex directly (not in a job, to preserve terminal) ---
-    # Redirect stderr to file
-    $codexArgsStr = ($codexArgs | ForEach-Object {
-        if ($_ -match '[\s"''\\]' -or $_.Length -eq 0) {
-            $escaped = $_ -replace '"', '\"'
-            "`"$escaped`""
-        } else { $_ }
+    # --- Resolve codex executable ---
+    # npm installs codex.ps1 + codex.cmd; we need the .cmd for Process.Start
+    $codexSource = (Get-Command codex -ErrorAction Stop).Source
+    $codexCmd = $codexSource -replace '\.ps1$', '.cmd'
+    if (-not (Test-Path $codexCmd)) {
+        $codexCmd = $codexSource
+    }
+
+    # --- Build argument string for Process.Start ---
+    $escapedArgs = ($codexArgs | ForEach-Object {
+        $escaped = $_ -replace '"', '\"'
+        "`"$escaped`""
     }) -join " "
 
-    # Use cmd.exe /c with proper escaping via a temp batch file
-    $batFile = Join-Path $env:TEMP "codex_run_${suffix}.cmd"
-    $codexCmd = (Get-Command codex -ErrorAction Stop).Source -replace '\.ps1$', '.cmd'
-    if (-not (Test-Path $codexCmd)) {
-        # Fallback to .ps1
-        $codexCmd = (Get-Command codex -ErrorAction Stop).Source
-    }
-
-    # Build the command - pass prompt as last argument
-    "@echo off" | Out-File -FilePath $batFile -Encoding ASCII
-    "call `"$codexCmd`" $codexArgsStr 2>`"$errFile`"" | Out-File -FilePath $batFile -Encoding ASCII -Append
-
+    # --- Execute codex via Process.Start (no cmd.exe, no batch file) ---
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
-    $pinfo.FileName = "cmd.exe"
-    $pinfo.Arguments = "/c `"$batFile`""
+    $pinfo.FileName = $codexCmd
+    $pinfo.Arguments = $escapedArgs
     $pinfo.UseShellExecute = $false
     $pinfo.CreateNoWindow = $true
-    $pinfo.RedirectStandardOutput = $false
-    $pinfo.RedirectStandardError = $false
+    $pinfo.RedirectStandardInput = $true
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError = $true
 
     $process = [System.Diagnostics.Process]::Start($pinfo)
+
+    # Write prompt to stdin using BOM-less UTF-8 (PS 5.1 compatible)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $writer = New-Object System.IO.StreamWriter($process.StandardInput.BaseStream, $utf8NoBom)
+    $writer.Write($fullPrompt)
+    $writer.Close()
+
+    # Read stdout and stderr asynchronously to avoid deadlock
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
     $exited = $process.WaitForExit($Timeout * 1000)
 
     if (-not $exited) {
         try { $process.Kill() } catch {}
         [Console]::Error.WriteLine("Error: Codex CLI timed out after ${Timeout}s")
         Cleanup
-        if (Test-Path $batFile) { Remove-Item $batFile -Force -ErrorAction SilentlyContinue }
         exit 2
     }
 
     $codexExit = $process.ExitCode
-    if (Test-Path $batFile) { Remove-Item $batFile -Force -ErrorAction SilentlyContinue }
+    $null = $stdoutTask.Result  # Consume stdout (we read from -o file instead)
+    $stderrContent = $stderrTask.Result
+
+    # Write stderr to file for error reporting
+    if ($stderrContent) {
+        $stderrContent | Out-File -FilePath $errFile -Encoding UTF8
+    }
 
     # --- Read output ---
     if (Test-Path $outFile) {

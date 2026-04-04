@@ -35,7 +35,12 @@ if [[ "${OSTYPE:-}" == "msys" || "${OSTYPE:-}" == "cygwin" ]]; then
     run_wrapper_with_context() {
         local prompt="$1"
         local context="$2"
-        powershell -ExecutionPolicy Bypass -NoProfile -File "$SCRIPT_DIR/scripts/codex-wrapper.ps1" -Prompt "$prompt" -Context "$context"
+        local tmpctx=$(mktemp "${TMPDIR:-/tmp}/e2e_ctx_XXXXXX.txt")
+        echo "$context" > "$tmpctx"
+        powershell -ExecutionPolicy Bypass -NoProfile -File "$SCRIPT_DIR/scripts/codex-wrapper.ps1" -Prompt "$prompt" -ContextFile "$tmpctx"
+        local rc=$?
+        rm -f "$tmpctx"
+        return $rc
     }
 else
     run_wrapper() {
@@ -44,7 +49,12 @@ else
     run_wrapper_with_context() {
         local prompt="$1"
         local context="$2"
-        bash "$SCRIPT_DIR/scripts/codex-wrapper.sh" --prompt "$prompt" --context "$context"
+        local tmpctx=$(mktemp "${TMPDIR:-/tmp}/e2e_ctx_XXXXXX.txt")
+        echo "$context" > "$tmpctx"
+        bash "$SCRIPT_DIR/scripts/codex-wrapper.sh" --prompt "$prompt" --context-file "$tmpctx"
+        local rc=$?
+        rm -f "$tmpctx"
+        return $rc
     }
 fi
 
