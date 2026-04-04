@@ -24,9 +24,13 @@ allowed-tools: Bash Read Grep Glob
    - 引数に `security`, `セキュリティ`, `監査` が含まれていれば `git diff` + 変更ファイル一覧を取得
    - 引数に `log`, `履歴` が含まれていれば `git log --oneline -20` を取得
 
-2. **コンテキストを整形する:**
-   収集した情報を以下の形式でまとめる:
-   ```
+2. **コンテキストを一時ファイルに書き出す:**
+
+   収集した情報を一時ファイルに書き出す（コマンドライン長制限を回避するため、必ずファイル経由で渡す）:
+
+   ```bash
+   TMPCTX=$(mktemp "${TMPDIR:-/tmp}/codex_ctx_XXXXXX.txt")
+   cat > "$TMPCTX" <<CTXEOF
    ## Context
 
    ### File: src/main.ts
@@ -34,29 +38,36 @@ allowed-tools: Bash Read Grep Glob
 
    ### Git Diff
    (差分)
+   CTXEOF
    ```
 
 3. **ラッパースクリプトを呼び出す:**
 
-   コンテキストを `-Context` / `--context` 引数に、質問を `-Prompt` / `--prompt` に渡す。
-
-   **Windows (PowerShell) の場合:**
-   コンテキストを一時ファイルに書き出してから渡す（コマンドライン長制限回避）:
+   ラッパースクリプトのパスを特定:
    ```bash
-   # コンテキストを一時ファイルに保存
-   TMPCTX=$(mktemp)
-   echo "$CONTEXT_TEXT" > "$TMPCTX"
-   CTX=$(cat "$TMPCTX")
-   powershell -ExecutionPolicy Bypass -NoProfile -File "${CLAUDE_SKILL_DIR}/../../../scripts/codex-wrapper.ps1" -Prompt "$QUESTION" -Context "$CTX"
+   WRAPPER_DIR="${CLAUDE_SKILL_DIR}/../../../scripts"
+   ```
+
+   OS を判定して `-ContextFile` / `--context-file` でファイルパスを渡す:
+
+   ```bash
+   if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+       powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" \
+           -Prompt "$QUESTION" -ContextFile "$TMPCTX"
+   else
+       bash "$WRAPPER_DIR/codex-wrapper.sh" \
+           --prompt "$QUESTION" --context-file "$TMPCTX"
+   fi
+   ```
+
+   > **重要:** `-Context` / `--context` でインライン渡しもできるが、大きなコンテキストではコマンドライン長制限に当たるため、`-ContextFile` / `--context-file` を使うこと。
+
+4. **一時ファイルを削除する:**
+   ```bash
    rm -f "$TMPCTX"
    ```
 
-   **Linux/macOS/WSL の場合:**
-   ```bash
-   bash "${CLAUDE_SKILL_DIR}/../../../scripts/codex-wrapper.sh" --prompt "$QUESTION" --context "$CONTEXT_TEXT"
-   ```
-
-4. **結果を表示する:**
+5. **結果を表示する:**
    ```
    ## Codex CLI のセカンドオピニオン（コンテキスト付き）
 
@@ -69,4 +80,4 @@ allowed-tools: Bash Read Grep Glob
    *Model: gpt-5.2-codex via Codex CLI*
    ```
 
-5. 必要に応じて、Claude 自身の見解と比較してコメントを添える。
+6. 必要に応じて、Claude 自身の見解と比較してコメントを添える。

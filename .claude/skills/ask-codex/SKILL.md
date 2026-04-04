@@ -13,28 +13,24 @@ allowed-tools: Bash Read
 
 1. `$ARGUMENTS` をプロンプトとして使う。空の場合はユーザーに質問内容を聞く。
 
-2. OS を判定して適切なラッパーを呼び出す:
-
-**Windows (PowerShell) の場合:**
+2. ラッパースクリプトのパスを特定する:
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "${CLAUDE_SKILL_DIR}/../../../scripts/codex-wrapper.ps1" -Prompt "$ARGUMENTS"
+WRAPPER_DIR="${CLAUDE_SKILL_DIR}/../../../scripts"
 ```
 
-**Linux/macOS/WSL の場合:**
-```bash
-bash "${CLAUDE_SKILL_DIR}/../../../scripts/codex-wrapper.sh" --prompt "$ARGUMENTS"
-```
+3. OS を判定して適切なラッパーを呼び出す:
 
-OS判定は以下で行う:
 ```bash
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-    # Windows → PowerShell版
+    powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" -Prompt "$ARGUMENTS"
 else
-    # Unix → bash版
+    bash "$WRAPPER_DIR/codex-wrapper.sh" --prompt "$ARGUMENTS"
 fi
 ```
 
-3. Codex の回答を表示し、以下の形式でユーザーに提示する:
+> **注意:** ラッパー内部で `--` セパレータを使用しているため、`$ARGUMENTS` がダッシュで始まっても安全に処理される。
+
+4. Codex の回答を表示し、以下の形式でユーザーに提示する:
 
 ```
 ## Codex CLI のセカンドオピニオン
@@ -47,4 +43,4 @@ fi
 *Model: gpt-5.2-codex via Codex CLI*
 ```
 
-4. 必要に応じて、Claude 自身の見解と比較してコメントを添える。
+5. 必要に応じて、Claude 自身の見解と比較してコメントを添える。
