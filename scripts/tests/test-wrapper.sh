@@ -86,6 +86,62 @@ else
     pass
 fi
 
+test_case "Error files are cleaned up after use"
+OUTPUT=$(bash "$WRAPPER" --prompt "Say hello" 2>&1)
+STALE_ERR=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name "codex_err_*" -mmin -1 2>/dev/null | head -5)
+if [[ -z "$STALE_ERR" ]]; then pass; else fail "Error temp files not cleaned up: $STALE_ERR"; fi
+
+# --------------------------------------------------
+echo ""
+echo "[Group 4: Injection Prevention]"
+
+test_case "Prompt starting with dash does not break codex"
+OUTPUT=$(bash "$WRAPPER" --prompt "-v --help" 2>&1)
+CODE=$?
+if [[ $CODE -eq 0 ]] && [[ -n "$OUTPUT" ]]; then
+    pass
+else
+    # Even if codex can't answer, it should not crash with option parsing error
+    if echo "$OUTPUT" | grep -qE "unexpected argument|unrecognized option"; then
+        fail "Prompt treated as option: $OUTPUT"
+    else
+        pass
+    fi
+fi
+
+# --------------------------------------------------
+echo ""
+echo "[Group 5: Context File Support]"
+
+test_case "Accepts --context-file parameter"
+CTX_TMP=$(mktemp "${TMPDIR:-/tmp}/test_ctx_XXXXXX.txt")
+echo "The capital of France is Paris." > "$CTX_TMP"
+OUTPUT=$(bash "$WRAPPER" --prompt "What city is mentioned in the context? Answer in one word." --context-file "$CTX_TMP" 2>&1)
+CODE=$?
+rm -f "$CTX_TMP"
+if [[ $CODE -eq 0 ]] && [[ -n "$OUTPUT" ]]; then
+    pass
+else
+    fail "exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "Errors on missing context file"
+OUTPUT=$(bash "$WRAPPER" --prompt "test" --context-file "/nonexistent/file.txt" 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1, got $CODE"; fi
+
+test_case "Large context triggers warning on stderr"
+LARGE_CTX=$(mktemp "${TMPDIR:-/tmp}/test_largectx_XXXXXX.txt")
+# Generate >100KB of text
+python3 -c "print('x' * 110000)" > "$LARGE_CTX" 2>/dev/null || printf '%0.sx' $(seq 1 110000) > "$LARGE_CTX"
+STDERR_OUT=$(bash "$WRAPPER" --prompt "Summarize in one word" --context-file "$LARGE_CTX" 2>&1 1>/dev/null)
+rm -f "$LARGE_CTX"
+if echo "$STDERR_OUT" | grep -qi "warning.*large\|warning.*context"; then
+    pass
+else
+    fail "Expected size warning on stderr, got: $STDERR_OUT"
+fi
+
 # --------------------------------------------------
 echo ""
 echo "=== Results ==="

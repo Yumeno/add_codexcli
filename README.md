@@ -170,6 +170,64 @@ bash scripts/tests/test-e2e.sh
 - **手動起動のみ**: コスト管理のため `disable-model-invocation: true`（Claude が勝手に呼ばない）
 - **マルチプラットフォーム**: Windows PowerShell（Shift-JIS パス対応）と bash（Linux/macOS/WSL）の両方に対応
 
+## トラブルシューティング
+
+### `codex: command not found`
+
+Codex CLI がインストールされていません。
+
+```bash
+npm install -g @openai/codex
+```
+
+インストール後、シェルを再起動するかパスを通してください。
+
+### `Error: stdin is not a terminal`
+
+PowerShell の `Start-Job` 内で codex を呼ぶと発生します。ラッパースクリプトの最新版では `cmd.exe` 経由で実行するため、この問題は解消済みです。ラッパーを最新版に更新してください。
+
+### `codex login` していない / 認証エラー
+
+```bash
+codex login
+```
+
+を実行して ChatGPT アカウントでログインしてください。API キーを使う場合は環境変数を設定：
+
+```bash
+export OPENAI_API_KEY="sk-..."
+```
+
+### タイムアウト
+
+デフォルトタイムアウトは 120 秒です。長いプロンプトや複雑な質問では足りないことがあります。ラッパーの `--timeout` / `-Timeout` オプションで延長できます。
+
+```bash
+# bash
+bash scripts/codex-wrapper.sh --prompt "..." --timeout 300
+
+# PowerShell
+powershell -File scripts/codex-wrapper.ps1 -Prompt "..." -Timeout 300
+```
+
+### `timeout` コマンドが見つからない（macOS）
+
+bash 版ラッパーは GNU coreutils の `timeout` コマンドを使います。macOS にはデフォルトで入っていません。
+
+```bash
+brew install coreutils  # gtimeout がインストールされる
+```
+
+`gtimeout` が見つかればそちらを使います。どちらも無い場合はタイムアウトなしで実行されます。
+
+### コンテキストが大きすぎる
+
+100KB を超えるコンテキストを渡すと警告が表示されます。大きなファイルを渡す場合は、関連部分だけを抜粋するか、`--context-file` / `-ContextFile` でファイル経由で渡してください（コマンドライン長制限を回避）。
+
+### 日本語パスで WebSocket エラー
+
+ラッパーが自動的に `-C $TEMP`（Windows）/ `-C /tmp`（Unix）を指定して回避しています。この仕組みにより、日本語パスを含むディレクトリで実行しても問題ありません。
+
 ## 制約事項
 
 - ChatGPT アカウント認証の場合、使用可能モデルは `gpt-5.2-codex` のみ

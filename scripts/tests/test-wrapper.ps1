@@ -101,6 +101,46 @@ Test-Case "Stderr noise is suppressed from output" {
     }
 }
 
+Test-Case "Error files are cleaned up after use" {
+    $r = Invoke-Wrapper "-Prompt 'Say hello'"
+    $errFiles = Get-ChildItem $env:TEMP -Filter "codex_err_*" -ErrorAction SilentlyContinue
+    if ($errFiles) {
+        throw "Error temp files should be cleaned up, found: $($errFiles.Name -join ', ')"
+    }
+}
+
+# --------------------------------------------------
+Write-Host ""
+Write-Host "[Group 4: Injection Prevention]" -ForegroundColor Yellow
+
+Test-Case "Prompt starting with dash does not break codex" {
+    $r = Invoke-Wrapper "-Prompt '-v --help'"
+    # Should not crash with option parsing error
+    if ($r.Output -match "unexpected argument|unrecognized option") {
+        throw "Prompt treated as option: $($r.Output)"
+    }
+}
+
+# --------------------------------------------------
+Write-Host ""
+Write-Host "[Group 5: Context File Support]" -ForegroundColor Yellow
+
+Test-Case "Accepts -ContextFile parameter" {
+    $ctxFile = Join-Path $env:TEMP "test_ctx_ps_$(Get-Random).txt"
+    "The capital of France is Paris." | Out-File -FilePath $ctxFile -Encoding UTF8
+    $r = Invoke-Wrapper "-Prompt 'What city is mentioned in the context? Answer in one word.' -ContextFile '$ctxFile'"
+    Remove-Item $ctxFile -Force -ErrorAction SilentlyContinue
+    Assert-Equal 0 $r.ExitCode "Should exit with code 0, got output: $($r.Output)"
+    if ($r.Output.Length -eq 0) {
+        throw "Output should not be empty"
+    }
+}
+
+Test-Case "Errors on missing context file" {
+    $r = Invoke-Wrapper "-Prompt 'test' -ContextFile 'C:\nonexistent\file.txt'"
+    Assert-Equal 1 $r.ExitCode "Should exit with code 1 for missing context file"
+}
+
 # --------------------------------------------------
 Write-Host ""
 Write-Host "=== Results ===" -ForegroundColor Cyan
