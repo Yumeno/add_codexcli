@@ -133,6 +133,22 @@ Claude が Codex CLI を呼び出し、回答を取得して表示します。
 | `log`, `履歴` | `git log --oneline -20` |
 | ファイルパス（例: `src/main.ts`） | そのファイルの内容 |
 
+### 自動呼び出しの設定
+
+デフォルトでは両スキルとも `disable-model-invocation: true`（手動起動のみ）です。「Codex にも聞いて」のような自然言語で Claude に自動呼び出しさせたい場合は、SKILL.md のフロントマターを変更してください。
+
+```yaml
+# .claude/skills/ask-codex/SKILL.md
+disable-model-invocation: false   # 自然言語で自動呼び出し可能にする
+```
+
+| 設定 | 動作 |
+|---|---|
+| `true`（デフォルト） | `/ask-codex` スラッシュコマンドでのみ起動。安全・コスト管理向き |
+| `false` | Claude が文脈から判断して自動的に Codex を呼べる。利便性重視 |
+
+> **注意:** `ask-codex-with-context` を `false` にすると、ファイル内容や差分が自動的に OpenAI に送信される場合があります。秘匿情報を含むプロジェクトでは `true` のまま使うことを推奨します。
+
 ## ファイル構成
 
 ```

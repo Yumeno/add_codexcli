@@ -9,6 +9,10 @@ allowed-tools: Bash Read
 
 ユーザーの質問をそのまま Codex CLI に投げて、回答を取得して表示します。
 
+> **`disable-model-invocation` について:** デフォルトは `true`（手動起動のみ）です。
+> `false` に変更すると「Codex にも聞いて」等の自然言語で Claude が自動的にこのスキルを呼べるようになります。
+> ユーザーの指示があれば、フロントマターの `disable-model-invocation` を `false` に変更してください。
+
 ## 手順
 
 1. `$ARGUMENTS` をプロンプトとして使う。空の場合はユーザーに質問内容を聞く。
@@ -20,6 +24,9 @@ WRAPPER_DIR="${CLAUDE_SKILL_DIR}/../../../scripts"
 
 3. OS を判定して適切なラッパーを呼び出す:
 
+> **注意:** ラッパーはプロンプトを stdin 経由で codex に渡すため、コマンドライン長の制限を受けません。
+> また `--` セパレータにより、プロンプトがダッシュで始まっても安全です。
+
 ```bash
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
     powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" -Prompt "$ARGUMENTS"
@@ -27,8 +34,6 @@ else
     bash "$WRAPPER_DIR/codex-wrapper.sh" --prompt "$ARGUMENTS"
 fi
 ```
-
-> **注意:** ラッパー内部で `--` セパレータを使用しているため、`$ARGUMENTS` がダッシュで始まっても安全に処理される。
 
 4. Codex の回答を表示し、以下の形式でユーザーに提示する:
 

@@ -9,6 +9,11 @@ allowed-tools: Bash Read Grep Glob
 
 ファイル内容や git diff などを添えて Codex CLI に質問・レビュー・監査を依頼します。
 
+> **`disable-model-invocation` について:** デフォルトは `true`（手動起動のみ）です。
+> このスキルはコンテキスト（ファイル内容や差分）を外部サービス（OpenAI）に送信するため、
+> `false` に変更する場合はその点を理解した上で行ってください。
+> ユーザーの指示があれば、フロントマターの `disable-model-invocation` を `false` に変更してください。
+
 ## 引数の解釈
 
 `$ARGUMENTS` は以下の形式を想定:
@@ -26,7 +31,7 @@ allowed-tools: Bash Read Grep Glob
 
 2. **コンテキストを一時ファイルに書き出す:**
 
-   収集した情報を一時ファイルに書き出す（コマンドライン長制限を回避するため、必ずファイル経由で渡す）:
+   コマンドライン長制限を回避するため、必ずファイル経由で渡す:
 
    ```bash
    TMPCTX=$(mktemp "${TMPDIR:-/tmp}/codex_ctx_XXXXXX.txt")
@@ -50,6 +55,10 @@ allowed-tools: Bash Read Grep Glob
 
    OS を判定して `-ContextFile` / `--context-file` でファイルパスを渡す:
 
+   > **注意:** ラッパーはプロンプト+コンテキストを stdin 経由で codex に渡します（PS版）。
+   > bash 版はコンテキストをプロンプトに結合して stdin または引数で渡します。
+   > いずれもコマンドライン長制限を受けません。
+
    ```bash
    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
        powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" \
@@ -59,8 +68,6 @@ allowed-tools: Bash Read Grep Glob
            --prompt "$QUESTION" --context-file "$TMPCTX"
    fi
    ```
-
-   > **重要:** `-Context` / `--context` でインライン渡しもできるが、大きなコンテキストではコマンドライン長制限に当たるため、`-ContextFile` / `--context-file` を使うこと。
 
 4. **一時ファイルを削除する:**
    ```bash
