@@ -44,7 +44,7 @@ curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/.claude/skil
   -o .claude/skills/ask-codex-with-context/SKILL.md
 
 # ラッパースクリプトをコピー
-mkdir -p scripts/tests
+mkdir -p scripts
 curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/scripts/codex-wrapper.ps1 \
   -o scripts/codex-wrapper.ps1
 curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/scripts/codex-wrapper.sh \
@@ -113,6 +113,8 @@ Claude が Codex CLI を呼び出し、回答を取得して表示します。
 /ask-codex このエラーの原因は何？ "TypeError: Cannot read property 'map' of undefined"
 /ask-codex React vs Vue、小規模プロジェクトにはどちらが向いている？
 ```
+
+スラッシュコマンドを使わず、Claude に直接「Codex にも聞いてみて」と頼むこともできます（自動呼び出し設定が有効な場合）。
 
 ### /ask-codex-with-context — コンテキスト付き
 
@@ -183,8 +185,18 @@ bash scripts/tests/test-e2e.sh
 - **CLI 経由**: API 直接呼び出しではなく `codex exec` コマンドを使用
 - **スキルベース**: Claude Code の Skills（`.claude/skills/`）として実装
 - **外部依存ゼロ**: サプライチェーン攻撃を避けるため、npm パッケージ等は使わない。Markdown + bash/PowerShell スクリプトのみ
-- **手動起動のみ**: コスト管理のため `disable-model-invocation: true`（Claude が勝手に呼ばない）
-- **マルチプラットフォーム**: Windows PowerShell（Shift-JIS パス対応）と bash（Linux/macOS/WSL）の両方に対応
+- **手動起動がデフォルト**: `disable-model-invocation: true`（ユーザー設定で変更可能）
+- **マルチプラットフォーム**: Windows PowerShell 5.1+（Shift-JIS パス対応）と bash（Linux/macOS/WSL）の両方に対応
+- **インジェクション対策**: プロンプトは stdin 経由で渡し、cmd.exe を介さない。`--` セパレータでオプション誤認を防止
+
+## セキュリティ
+
+- **外部依存ゼロ**: npm パッケージを使わないため、サプライチェーン攻撃のリスクがない
+- **CMD インジェクション対策**: PowerShell 版は `Process.Start` で codex を直接起動し、cmd.exe やバッチファイルを経由しない。`%PATH%` や `!VAR!` などの CMD 制御文字が展開されることはない
+- **プロンプトインジェクション対策**: `--` セパレータにより、プロンプト内容が codex のオプションとして解釈されることを防止
+- **stdin 渡し**: プロンプトはコマンドライン引数ではなく stdin で渡すため、プロセスリストからの漏洩やコマンドライン長制限の問題がない
+- **一時ファイルの自動削除**: 出力ファイル・エラーファイル・プロンプトファイルはすべてスクリプト終了時に削除
+- **秘匿情報の送信に注意**: `ask-codex-with-context` はファイル内容や git diff を OpenAI に送信します。秘匿情報を含むプロジェクトでは自動呼び出し（`disable-model-invocation: false`）を避けてください
 
 ## トラブルシューティング
 
@@ -197,10 +209,6 @@ npm install -g @openai/codex
 ```
 
 インストール後、シェルを再起動するかパスを通してください。
-
-### `Error: stdin is not a terminal`
-
-PowerShell の `Start-Job` 内で codex を呼ぶと発生します。ラッパースクリプトの最新版では `cmd.exe` 経由で実行するため、この問題は解消済みです。ラッパーを最新版に更新してください。
 
 ### `codex login` していない / 認証エラー
 
@@ -238,14 +246,27 @@ brew install coreutils  # gtimeout がインストールされる
 
 ### コンテキストが大きすぎる
 
-100KB を超えるコンテキストを渡すと警告が表示されます。大きなファイルを渡す場合は、関連部分だけを抜粋するか、`--context-file` / `-ContextFile` でファイル経由で渡してください（コマンドライン長制限を回避）。
+100KB を超えるコンテキストを渡すと警告が表示されます。大きなファイルを渡す場合は、関連部分だけを抜粋するか、`--context-file` / `-ContextFile` でファイル経由で渡してください。
 
 ### 日本語パスで WebSocket エラー
 
 ラッパーが自動的に `-C $TEMP`（Windows）/ `-C /tmp`（Unix）を指定して回避しています。この仕組みにより、日本語パスを含むディレクトリで実行しても問題ありません。
+
+### WSL で Windows 側の codex が使われる
+
+WSL から実行した際に `/mnt/c/.../npm/codex` が使われてしまう場合は、WSL 内にネイティブで Codex CLI をインストールしてください。
+
+```bash
+# WSL 内で
+npm install -g @openai/codex
+```
 
 ## 制約事項
 
 - ChatGPT アカウント認証の場合、使用可能モデルは `gpt-5.2-codex` のみ
 - 日本語パスを含む作業ディレクトリでは Codex CLI の WebSocket 接続でエラーが出るため、ラッパーで `-C` フラグにより回避
 - Codex CLI の応答時間はネットワーク状況やプロンプトの複雑さに依存（デフォルトタイムアウト: 120秒）
+
+## ライセンス
+
+MIT
