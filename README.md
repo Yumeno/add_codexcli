@@ -74,17 +74,19 @@ mkdir -p .claude/skills/ask-codex .claude/skills/ask-codex-with-context
 
 特定のプロジェクトではなく、すべてのプロジェクトで使いたい場合：
 
+**Linux / macOS / WSL / Git Bash:**
+
 ```bash
 # グローバルスキルディレクトリに配置
 mkdir -p ~/.claude/skills/ask-codex ~/.claude/skills/ask-codex-with-context
 
-# SKILL.md をコピー（curl or 手動コピー）
+# SKILL.md をコピー
 curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/.claude/skills/ask-codex/SKILL.md \
   -o ~/.claude/skills/ask-codex/SKILL.md
 curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/.claude/skills/ask-codex-with-context/SKILL.md \
   -o ~/.claude/skills/ask-codex-with-context/SKILL.md
 
-# ラッパースクリプトは固定パスに置く（例: ~/.claude/scripts/）
+# ラッパースクリプトは固定パスに置く
 mkdir -p ~/.claude/scripts
 curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/scripts/codex-wrapper.ps1 \
   -o ~/.claude/scripts/codex-wrapper.ps1
@@ -93,7 +95,29 @@ curl -sL https://raw.githubusercontent.com/Yumeno/add_codexcli/main/scripts/code
 chmod +x ~/.claude/scripts/codex-wrapper.sh
 ```
 
-> **重要:** グローバルインストールの場合、SKILL.md 内のラッパーパスを `~/.claude/scripts/codex-wrapper.sh` に書き換える必要があります。
+**Windows (PowerShell):**
+
+```powershell
+# グローバルスキルディレクトリに配置
+$ClaudeDir = "$env:USERPROFILE\.claude"
+New-Item -ItemType Directory -Force -Path "$ClaudeDir\skills\ask-codex", "$ClaudeDir\skills\ask-codex-with-context", "$ClaudeDir\scripts"
+
+# SKILL.md をダウンロード
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Yumeno/add_codexcli/main/.claude/skills/ask-codex/SKILL.md" `
+  -OutFile "$ClaudeDir\skills\ask-codex\SKILL.md"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Yumeno/add_codexcli/main/.claude/skills/ask-codex-with-context/SKILL.md" `
+  -OutFile "$ClaudeDir\skills\ask-codex-with-context\SKILL.md"
+
+# ラッパースクリプトをダウンロード
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Yumeno/add_codexcli/main/scripts/codex-wrapper.ps1" `
+  -OutFile "$ClaudeDir\scripts\codex-wrapper.ps1"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Yumeno/add_codexcli/main/scripts/codex-wrapper.sh" `
+  -OutFile "$ClaudeDir\scripts\codex-wrapper.sh"
+```
+
+> **重要:** グローバルインストールの場合、SKILL.md 内のラッパーパスを書き換える必要があります。
+> - Linux/macOS/WSL: `~/.claude/scripts/codex-wrapper.sh`
+> - Windows: `%USERPROFILE%\.claude\scripts\codex-wrapper.ps1`（または `$env:USERPROFILE\.claude\scripts\codex-wrapper.ps1`）
 
 ## 使い方
 
