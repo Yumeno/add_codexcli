@@ -111,6 +111,91 @@ fi
 
 # --------------------------------------------------
 echo ""
+echo "[Group 4a: Model resolution & config file]"
+
+# Save/restore any pre-existing config so the test doesn't clobber it.
+CONF_PATH="$SCRIPT_DIR/scripts/codex-wrapper.conf"
+CONF_BACKUP=""
+if [[ -f "$CONF_PATH" ]]; then
+    CONF_BACKUP=$(mktemp "${TMPDIR:-/tmp}/codex_conf_bak_XXXXXX")
+    cp "$CONF_PATH" "$CONF_BACKUP"
+fi
+restore_conf() {
+    if [[ -n "$CONF_BACKUP" ]]; then
+        mv "$CONF_BACKUP" "$CONF_PATH"
+    else
+        rm -f "$CONF_PATH"
+    fi
+}
+trap restore_conf EXIT
+
+test_case "--set-model writes config and exits 0"
+rm -f "$CONF_PATH"
+OUTPUT=$(bash "$WRAPPER" --set-model "gpt-5.2-codex" 2>&1)
+CODE=$?
+if [[ $CODE -eq 0 ]] && [[ -f "$CONF_PATH" ]] && grep -q '^model=gpt-5.2-codex$' "$CONF_PATH"; then
+    pass
+else
+    fail "Expected config write, got exit=$CODE output='$OUTPUT' conf=$(cat "$CONF_PATH" 2>/dev/null)"
+fi
+
+test_case "--set-model rejects unsafe characters"
+OUTPUT=$(bash "$WRAPPER" --set-model 'foo; rm -rf /' 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1, got $CODE"; fi
+
+test_case "--show-model reports config source after set"
+bash "$WRAPPER" --set-model "gpt-5.2-codex" >/dev/null 2>&1
+OUTPUT=$(bash "$WRAPPER" --show-model 2>&1)
+CODE=$?
+if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=gpt-5\.2-codex.*source: config'; then
+    pass
+else
+    fail "Expected config source, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--show-model reports cli source when --model also passed"
+OUTPUT=$(bash "$WRAPPER" --model "gpt-X" --show-model 2>&1)
+CODE=$?
+if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=gpt-X.*source: cli'; then
+    pass
+else
+    fail "Expected cli source, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--show-model reports env source when env set and no --model"
+OUTPUT=$(CODEX_WRAPPER_MODEL="gpt-env" bash "$WRAPPER" --show-model 2>&1)
+CODE=$?
+if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=gpt-env.*source: env'; then
+    pass
+else
+    fail "Expected env source, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--show-model reports unset when no config and no env"
+rm -f "$CONF_PATH"
+OUTPUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --show-model 2>&1)
+CODE=$?
+if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=\(unset'; then
+    pass
+else
+    fail "Expected unset state, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "Config file is picked up on invocation (MODEL: on stderr)"
+bash "$WRAPPER" --set-model "gpt-5.2-codex" >/dev/null 2>&1
+STDERR_OUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "Say OK" 2>&1 1>/dev/null)
+if echo "$STDERR_OUT" | grep -qE '^MODEL: gpt-5\.2-codex$'; then
+    pass
+else
+    fail "Expected 'MODEL: gpt-5.2-codex' on stderr from config, got: $STDERR_OUT"
+fi
+
+# Restore: remove config so subsequent tests run with clean state.
+rm -f "$CONF_PATH"
+
+# --------------------------------------------------
+echo ""
 echo "[Group 4b: Model announcement on stderr]"
 
 test_case "Emits MODEL: line on stderr when --model is given"
@@ -121,10 +206,13 @@ else
     fail "Expected 'MODEL: gpt-5.2-codex' on stderr, got: $STDERR_OUT"
 fi
 
-test_case "Does NOT emit MODEL: line on stderr when --model is omitted"
-STDERR_OUT=$(bash "$WRAPPER" --prompt "Say OK" 2>&1 1>/dev/null)
+test_case "Does NOT emit MODEL: line on stderr when nothing resolves"
+# Strip env and ensure no config file lingers; otherwise the wrapper would
+# (correctly) emit MODEL: from those sources.
+rm -f "$CONF_PATH"
+STDERR_OUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "Say OK" 2>&1 1>/dev/null)
 if echo "$STDERR_OUT" | grep -qE '^MODEL: '; then
-    fail "Should not announce a model when --model is unset, but got: $STDERR_OUT"
+    fail "Should not announce a model when nothing resolves, but got: $STDERR_OUT"
 else
     pass
 fi

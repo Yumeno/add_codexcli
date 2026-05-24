@@ -123,6 +123,74 @@ Test-Case "Prompt starting with dash does not break codex" {
 
 # --------------------------------------------------
 Write-Host ""
+Write-Host "[Group 4a: Model resolution & config file]" -ForegroundColor Yellow
+
+$ConfPath = Join-Path (Join-Path $ScriptDir "scripts") "codex-wrapper.conf"
+$ConfBackup = ""
+if (Test-Path $ConfPath) {
+    $ConfBackup = Join-Path $env:TEMP "codex_conf_bak_$(Get-Random).txt"
+    Copy-Item $ConfPath $ConfBackup -Force
+}
+
+Test-Case "-SetModel writes config and exits 0" {
+    if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+    $r = Invoke-Wrapper "-SetModel 'gpt-5.2-codex'"
+    if ($r.ExitCode -ne 0) { throw "Expected exit 0, got $($r.ExitCode). Output: $($r.Output)" }
+    if (-not (Test-Path $script:ConfPath)) { throw "Config file was not written" }
+    $content = Get-Content $script:ConfPath -Raw
+    if ($content -notmatch '(?m)^model=gpt-5\.2-codex\s*$') {
+        throw "Config does not contain expected model= line. Content: $content"
+    }
+}
+
+Test-Case "-SetModel rejects unsafe characters" {
+    $r = Invoke-Wrapper "-SetModel 'foo; rm -rf /'"
+    if ($r.ExitCode -ne 1) { throw "Expected exit 1, got $($r.ExitCode)" }
+}
+
+Test-Case "-ShowModel reports config source after set" {
+    $null = Invoke-Wrapper "-SetModel 'gpt-5.2-codex'"
+    $r = Invoke-Wrapper "-ShowModel"
+    if ($r.ExitCode -ne 0) { throw "Expected exit 0, got $($r.ExitCode)" }
+    if ($r.Output -notmatch 'model=gpt-5\.2-codex.*source: config') {
+        throw "Expected config source, got: $($r.Output)"
+    }
+}
+
+Test-Case "-ShowModel reports cli source when -Model also passed" {
+    $r = Invoke-Wrapper "-Model 'gpt-X' -ShowModel"
+    if ($r.Output -notmatch 'model=gpt-X.*source: cli') {
+        throw "Expected cli source, got: $($r.Output)"
+    }
+}
+
+Test-Case "-ShowModel reports env source when env set and no -Model" {
+    if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+    $env:CODEX_WRAPPER_MODEL = "gpt-env"
+    try {
+        $r = Invoke-Wrapper "-ShowModel"
+        if ($r.Output -notmatch 'model=gpt-env.*source: env') {
+            throw "Expected env source, got: $($r.Output)"
+        }
+    } finally {
+        Remove-Item Env:CODEX_WRAPPER_MODEL -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case "-ShowModel reports unset when no config and no env" {
+    if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+    Remove-Item Env:CODEX_WRAPPER_MODEL -ErrorAction SilentlyContinue
+    $r = Invoke-Wrapper "-ShowModel"
+    if ($r.Output -notmatch 'model=\(unset') {
+        throw "Expected unset state, got: $($r.Output)"
+    }
+}
+
+# Clean up config so next group runs from a known state.
+if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+
+# --------------------------------------------------
+Write-Host ""
 Write-Host "[Group 4b: Model announcement on stderr]" -ForegroundColor Yellow
 
 # Helper that captures stdout and stderr into separate streams.
@@ -154,10 +222,13 @@ Test-Case "Emits MODEL: line on stderr when -Model is given" {
     }
 }
 
-Test-Case "Does NOT emit MODEL: line on stderr when -Model is omitted" {
+Test-Case "Does NOT emit MODEL: line on stderr when nothing resolves" {
+    # Strip env and config so we exercise the truly-unresolved path.
+    if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+    Remove-Item Env:CODEX_WRAPPER_MODEL -ErrorAction SilentlyContinue
     $r = Invoke-WrapperSplit "-Prompt 'Say OK'"
     if ($r.StdErr -match '(?m)^MODEL: ') {
-        throw "Should not announce a model when -Model is unset, but got: $($r.StdErr)"
+        throw "Should not announce a model when nothing resolves, but got: $($r.StdErr)"
     }
 }
 
@@ -182,6 +253,12 @@ Test-Case "Errors on missing context file" {
 }
 
 # --------------------------------------------------
+# Restore original config (if any) before reporting results.
+if (Test-Path $ConfPath) { Remove-Item $ConfPath -Force }
+if ($ConfBackup -and (Test-Path $ConfBackup)) {
+    Move-Item $ConfBackup $ConfPath -Force
+}
+
 Write-Host ""
 Write-Host "=== Results ===" -ForegroundColor Cyan
 Write-Host "Passed: $passed / $total" -ForegroundColor $(if ($failed -eq 0) { "Green" } else { "Red" })

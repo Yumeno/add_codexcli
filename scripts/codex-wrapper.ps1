@@ -2,12 +2,16 @@
 # Usage: powershell -ExecutionPolicy Bypass -File codex-wrapper.ps1 -Prompt "your question"
 #
 # Options:
-#   -Prompt       (required) The prompt to send to Codex
+#   -Prompt       (required for invocation) The prompt to send to Codex
 #   -Model        (optional) Model name
 #   -Timeout      (optional) Timeout in seconds (default: 120)
 #   -WorkDir      (optional) Working directory for codex (default: $env:TEMP)
 #   -Context      (optional) Additional context to prepend to the prompt
 #   -ContextFile  (optional) Path to a file containing context (avoids cmdline length limits)
+#
+# Config subcommands (do not invoke codex):
+#   -SetModel NAME  Persist NAME as the default model in codex-wrapper.conf
+#   -ShowModel      Print the currently resolved model and its source, then exit
 
 param(
     [string]$Prompt = "",
@@ -15,11 +19,94 @@ param(
     [int]$Timeout = 120,
     [string]$WorkDir = "",
     [string]$Context = "",
-    [string]$ContextFile = ""
+    [string]$ContextFile = "",
+    [string]$SetModel = "",
+    [switch]$ShowModel
 )
 
 # Max context size in bytes before warning (100KB)
 $MaxContextSize = 102400
+
+# Config file lives next to this script. Same relative position whether the
+# install is project-local (<proj>\scripts\) or global (~\.claude\scripts\).
+$ConfigFile = Join-Path $PSScriptRoot "codex-wrapper.conf"
+
+function Read-ConfigModel {
+    if (-not (Test-Path $ConfigFile)) { return "" }
+    foreach ($line in (Get-Content $ConfigFile -Encoding UTF8)) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq "" -or $trimmed.StartsWith("#")) { continue }
+        if ($trimmed -match '^\s*model\s*=\s*(.*?)\s*$') {
+            $val = $matches[1]
+            if (($val.StartsWith('"') -and $val.EndsWith('"')) -or
+                ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+                $val = $val.Substring(1, $val.Length - 2)
+            }
+            return $val
+        }
+    }
+    return ""
+}
+
+# --- Subcommand: -SetModel (write config, exit) ---
+if (-not [string]::IsNullOrWhiteSpace($SetModel)) {
+    if ($SetModel -notmatch '^[A-Za-z0-9._:/-]+$') {
+        [Console]::Error.WriteLine("Error: model name '$SetModel' contains unsafe characters.")
+        [Console]::Error.WriteLine("       Allowed: A-Z a-z 0-9 . _ : / -")
+        exit 1
+    }
+    $confContent = @"
+# codex-wrapper.conf
+# Default options for codex-wrapper.sh / codex-wrapper.ps1.
+# Edit this file directly, or use:
+#   powershell -File codex-wrapper.ps1 -SetModel <name>
+#
+# Lookup priority for the model:
+#   1. --model / -Model CLI flag
+#   2. `$CODEX_WRAPPER_MODEL environment variable
+#   3. this file (model=...)
+#   4. unset (codex CLI default)
+
+model=$SetModel
+"@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($ConfigFile, $confContent, $utf8NoBom)
+    Write-Output "Saved model='$SetModel' to $ConfigFile"
+    exit 0
+}
+
+# --- Resolve effective model (priority: -Model > env > config) ---
+$ModelSource = ""
+if (-not [string]::IsNullOrWhiteSpace($Model)) {
+    $ModelSource = "cli"
+} elseif (-not [string]::IsNullOrWhiteSpace($env:CODEX_WRAPPER_MODEL)) {
+    $Model = $env:CODEX_WRAPPER_MODEL
+    $ModelSource = "env"
+} else {
+    $cfgModel = Read-ConfigModel
+    if (-not [string]::IsNullOrWhiteSpace($cfgModel)) {
+        $Model = $cfgModel
+        $ModelSource = "config"
+    }
+}
+
+# --- Subcommand: -ShowModel (print resolved model, exit) ---
+if ($ShowModel) {
+    if (-not [string]::IsNullOrWhiteSpace($Model)) {
+        Write-Output "model=$Model (source: $ModelSource)"
+        if ($ModelSource -eq "config") {
+            Write-Output "config_file=$ConfigFile"
+        }
+    } else {
+        Write-Output "model=(unset; codex CLI default will be used)"
+        if (Test-Path $ConfigFile) {
+            Write-Output "config_file=$ConfigFile (no model= entry)"
+        } else {
+            Write-Output "config_file=$ConfigFile (does not exist)"
+        }
+    }
+    exit 0
+}
 
 # --- Input validation ---
 if ([string]::IsNullOrWhiteSpace($Prompt)) {
@@ -78,8 +165,9 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($Model)) {
         $codexArgs += @("-m", $Model)
         # Announce the resolved model on stderr so callers (e.g. SKILLs) can
-        # display it without guessing. Only emitted when -Model was supplied:
-        # otherwise we genuinely don't know which model codex picked.
+        # display it without guessing. Emitted whenever we have a concrete model
+        # (cli / env / config); when nothing resolved we stay silent because we
+        # cannot know which model codex itself picked.
         [Console]::Error.WriteLine("MODEL: $Model")
     }
 

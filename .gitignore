@@ -10,3 +10,6 @@ Desktop.ini
 *.tmp
 *.log
 /tmp/
+
+# Per-user wrapper config (default model, etc.)
+scripts/codex-wrapper.conf
