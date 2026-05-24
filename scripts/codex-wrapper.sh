@@ -88,6 +88,10 @@ CODEX_ARGS=(exec -C "$WORKDIR" --skip-git-repo-check --ephemeral -o "$OUT_FILE")
 
 if [[ -n "$MODEL" ]]; then
     CODEX_ARGS+=(-m "$MODEL")
+    # Announce the resolved model on stderr so callers (e.g. SKILLs) can
+    # display it without guessing. Only emitted when --model was supplied:
+    # otherwise we genuinely don't know which model codex picked.
+    echo "MODEL: $MODEL" >&2
 fi
 
 CODEX_ARGS+=(--)

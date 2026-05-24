@@ -53,20 +53,26 @@ allowed-tools: Bash Read Grep Glob
    WRAPPER_DIR="${CLAUDE_SKILL_DIR}/../../../scripts"
    ```
 
-   OS を判定して `-ContextFile` / `--context-file` でファイルパスを渡す:
+   OS を判定して `-ContextFile` / `--context-file` でファイルパスを渡す。stderr を別ファイルに分離し、後でモデル名抽出に使う:
 
    > **注意:** ラッパーはプロンプト+コンテキストを stdin 経由で codex に渡します（PS版）。
    > bash 版はコンテキストをプロンプトに結合して stdin または引数で渡します。
    > いずれもコマンドライン長制限を受けません。
 
    ```bash
+   ERRFILE=$(mktemp "${TMPDIR:-/tmp}/codex_skill_err_XXXXXX.txt")
    if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-       powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" \
-           -Prompt "$QUESTION" -ContextFile "$TMPCTX"
+       RESPONSE=$(powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" \
+           -Prompt "$QUESTION" -ContextFile "$TMPCTX" 2>"$ERRFILE")
    else
-       bash "$WRAPPER_DIR/codex-wrapper.sh" \
-           --prompt "$QUESTION" --context-file "$TMPCTX"
+       RESPONSE=$(bash "$WRAPPER_DIR/codex-wrapper.sh" \
+           --prompt "$QUESTION" --context-file "$TMPCTX" 2>"$ERRFILE")
    fi
+   # Pull the model name only if the wrapper announced one (i.e. --model was passed).
+   # When no model was supplied, the wrapper stays silent because we cannot know
+   # which model codex actually picked (its default changes between versions).
+   MODEL_USED=$(grep -E '^MODEL: ' "$ERRFILE" | head -1 | sed 's/^MODEL: //')
+   rm -f "$ERRFILE"
    ```
 
 4. **一時ファイルを削除する:**
@@ -74,7 +80,9 @@ allowed-tools: Bash Read Grep Glob
    rm -f "$TMPCTX"
    ```
 
-5. **結果を表示する:**
+5. **結果を表示する。** フッターのモデル表記は **`MODEL_USED` が取れたときだけ** 出す。取れなかったとき（通常運用）は嘘になるので絶対にモデル名を固定で書かない:
+
+   `MODEL_USED` が空でないとき:
    ```
    ## Codex CLI のセカンドオピニオン（コンテキスト付き）
 
@@ -84,7 +92,20 @@ allowed-tools: Bash Read Grep Glob
    (Codex の回答)
 
    ---
-   *Model: gpt-5.2-codex via Codex CLI*
+   *Model: <MODEL_USED の値> via Codex CLI*
+   ```
+
+   `MODEL_USED` が空のとき（`--model` 未指定なので実際のモデル不明）:
+   ```
+   ## Codex CLI のセカンドオピニオン（コンテキスト付き）
+
+   > 質問: (ユーザーの質問)
+   > コンテキスト: (何を添えたかの要約)
+
+   (Codex の回答)
+
+   ---
+   *via Codex CLI（モデル未指定 / codex のデフォルトに委任）*
    ```
 
 6. 必要に応じて、Claude 自身の見解と比較してコメントを添える。

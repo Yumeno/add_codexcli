@@ -123,6 +123,46 @@ Test-Case "Prompt starting with dash does not break codex" {
 
 # --------------------------------------------------
 Write-Host ""
+Write-Host "[Group 4b: Model announcement on stderr]" -ForegroundColor Yellow
+
+# Helper that captures stdout and stderr into separate streams.
+function Invoke-WrapperSplit {
+    param([string]$ArgString)
+    $stdoutFile = Join-Path $env:TEMP "test_wrapper_stdout_$(Get-Random).txt"
+    $stderrFile = Join-Path $env:TEMP "test_wrapper_stderr_$(Get-Random).txt"
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "powershell"
+    $psi.Arguments = "-ExecutionPolicy Bypass -NoProfile -File `"$Wrapper`" $ArgString"
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $stdout = $p.StandardOutput.ReadToEnd()
+    $stderr = $p.StandardError.ReadToEnd()
+    $p.WaitForExit()
+    return @{
+        ExitCode = $p.ExitCode
+        StdOut = $stdout
+        StdErr = $stderr
+    }
+}
+
+Test-Case "Emits MODEL: line on stderr when -Model is given" {
+    $r = Invoke-WrapperSplit "-Prompt 'Say OK' -Model 'gpt-5.2-codex'"
+    if ($r.StdErr -notmatch '(?m)^MODEL: gpt-5\.2-codex\s*$') {
+        throw "Expected 'MODEL: gpt-5.2-codex' on stderr, got: $($r.StdErr)"
+    }
+}
+
+Test-Case "Does NOT emit MODEL: line on stderr when -Model is omitted" {
+    $r = Invoke-WrapperSplit "-Prompt 'Say OK'"
+    if ($r.StdErr -match '(?m)^MODEL: ') {
+        throw "Should not announce a model when -Model is unset, but got: $($r.StdErr)"
+    }
+}
+
+# --------------------------------------------------
+Write-Host ""
 Write-Host "[Group 5: Context File Support]" -ForegroundColor Yellow
 
 Test-Case "Accepts -ContextFile parameter" {

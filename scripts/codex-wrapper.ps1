@@ -77,6 +77,10 @@ try {
 
     if (-not [string]::IsNullOrWhiteSpace($Model)) {
         $codexArgs += @("-m", $Model)
+        # Announce the resolved model on stderr so callers (e.g. SKILLs) can
+        # display it without guessing. Only emitted when -Model was supplied:
+        # otherwise we genuinely don't know which model codex picked.
+        [Console]::Error.WriteLine("MODEL: $Model")
     }
 
     # Use "-" to tell codex to read prompt from stdin

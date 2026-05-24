@@ -111,6 +111,26 @@ fi
 
 # --------------------------------------------------
 echo ""
+echo "[Group 4b: Model announcement on stderr]"
+
+test_case "Emits MODEL: line on stderr when --model is given"
+STDERR_OUT=$(bash "$WRAPPER" --prompt "Say OK" --model "gpt-5.2-codex" 2>&1 1>/dev/null)
+if echo "$STDERR_OUT" | grep -qE '^MODEL: gpt-5\.2-codex$'; then
+    pass
+else
+    fail "Expected 'MODEL: gpt-5.2-codex' on stderr, got: $STDERR_OUT"
+fi
+
+test_case "Does NOT emit MODEL: line on stderr when --model is omitted"
+STDERR_OUT=$(bash "$WRAPPER" --prompt "Say OK" 2>&1 1>/dev/null)
+if echo "$STDERR_OUT" | grep -qE '^MODEL: '; then
+    fail "Should not announce a model when --model is unset, but got: $STDERR_OUT"
+else
+    pass
+fi
+
+# --------------------------------------------------
+echo ""
 echo "[Group 5: Context File Support]"
 
 test_case "Accepts --context-file parameter"
