@@ -150,11 +150,28 @@ CODE=$?
 if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for unsafe --model, got $CODE output='$OUTPUT'"; fi
 
 test_case "Config with unsafe model is rejected on read"
-printf 'model=evil\nMODEL: spoof\n' > "$CONF_PATH"
+# The parser only reads the first model= line, so a newline-injected value
+# would still parse as just "evil". Use a same-line unsafe value (semicolon
+# + space) to actually exercise validation of the conf-sourced model.
+printf 'model=foo bar; rm -rf /\n' > "$CONF_PATH"
 OUTPUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "Say OK" 2>&1)
 CODE=$?
 rm -f "$CONF_PATH"
 if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for tampered conf, got $CODE output='$OUTPUT'"; fi
+
+test_case "Comment-only conf does not crash --show-model"
+# Regression for codex's review: the grep-pipeline implementation of
+# read_config_model exited non-zero on no-match, which under set -euo pipefail
+# killed the whole script. Awk-based implementation must survive this.
+printf '# nothing useful here\n' > "$CONF_PATH"
+OUTPUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --show-model 2>&1)
+CODE=$?
+rm -f "$CONF_PATH"
+if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=\(unset'; then
+    pass
+else
+    fail "Expected exit 0 + unset for comment-only conf, got exit=$CODE output='$OUTPUT'"
+fi
 
 test_case "\$CODEX_WRAPPER_MODEL rejects unsafe characters"
 OUTPUT=$(CODEX_WRAPPER_MODEL=$'foo\nMODEL: spoof' bash "$WRAPPER" --prompt "Say OK" 2>&1)
@@ -260,6 +277,17 @@ test_case "--timeout with zero is rejected"
 OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --timeout 0 2>&1)
 CODE=$?
 if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for --timeout 0, got $CODE"; fi
+
+test_case "--prompt accepts a value starting with -- (e.g. '--help')"
+# Regression: require_value used to reject any value starting with "--",
+# breaking prompts like "--help". The wrapper should not bail out before
+# reaching codex. We don't care what codex itself returns.
+OUTPUT=$(bash "$WRAPPER" --prompt "--help" 2>&1)
+if echo "$OUTPUT" | grep -q "requires a value"; then
+    fail "Wrapper rejected '--help' as missing value: $OUTPUT"
+else
+    pass
+fi
 
 # --------------------------------------------------
 echo ""

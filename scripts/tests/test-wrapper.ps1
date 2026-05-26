@@ -170,15 +170,43 @@ Test-Case "-Model rejects unsafe characters too" {
 }
 
 Test-Case "Config with unsafe model is rejected on read" {
-    # Write a tampered conf with a newline-injected model and ensure the
-    # wrapper rejects it instead of emitting a spoofed MODEL: header.
+    # The parser only ever reads the first model= line, so a newline-injected
+    # value would still parse cleanly. Use a same-line unsafe value (semicolon
+    # + space) to actually exercise validation of the conf-sourced model.
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($script:ConfPath, "model=evil`nMODEL: spoof`n", $utf8NoBom)
+    [System.IO.File]::WriteAllText($script:ConfPath, "model=foo bar; rm -rf /`n", $utf8NoBom)
     $r = Invoke-Wrapper @("-Prompt", "Say OK")
     if ($r.ExitCode -ne 1) {
         throw "Expected exit 1 for tampered conf, got $($r.ExitCode). Output: $($r.Output)"
     }
     if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+}
+
+Test-Case "Comment-only conf does not crash --show-model" {
+    # Regression for codex's review: an awk/grep no-match used to kill the
+    # whole script under set -euo pipefail. PS doesn't have that exact bug,
+    # but symmetry across platforms is worth pinning down.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($script:ConfPath, "# nothing useful here`n", $utf8NoBom)
+    $r = Invoke-Wrapper @("-ShowModel")
+    if ($r.ExitCode -ne 0) {
+        throw "Expected exit 0 with comment-only conf, got $($r.ExitCode). Output: $($r.Output)"
+    }
+    if ($r.Output -notmatch 'model=\(unset') {
+        throw "Expected unset state for comment-only conf, got: $($r.Output)"
+    }
+    if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
+}
+
+Test-Case "Prompt starting with -- is accepted (not treated as missing value)" {
+    # Regression: require_value used to reject any value starting with "--",
+    # breaking prompts like "--help" which are perfectly legal to send to codex.
+    $r = Invoke-Wrapper @("-Prompt", "--help")
+    # We don't care what codex itself says; we only care that the wrapper
+    # didn't bail out with a "requires a value" error before invoking codex.
+    if ($r.Output -match "requires a value") {
+        throw "Wrapper rejected -- prefixed prompt as missing value: $($r.Output)"
+    }
 }
 
 Test-Case "-ShowModel reports config source after set" {

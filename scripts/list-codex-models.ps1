@@ -1,4 +1,4 @@
-# list-codex-models.ps1 - List models the codex CLI is aware of.
+﻿# list-codex-models.ps1 - List models the codex CLI is aware of.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File list-codex-models.ps1 [-Bundled] [-Json]
 #   -Bundled  Use only the catalog bundled with the binary (no network).
@@ -35,9 +35,38 @@ if ($Bundled) {
     $codexArgs += "--bundled"
 }
 
-# --- Run codex from %TEMP% to dodge non-ASCII cwd issues ---
+# --- Resolve an ASCII-only working directory (mirrors codex-wrapper.ps1) ---
+# On a Windows box with a Japanese username, $env:TEMP itself is non-ASCII
+# (`C:\Users\<jp>\AppData\Local\Temp`) and just `Set-Location $env:TEMP`
+# reproduces the very WebSocket bug we are trying to dodge.
+function Test-IsAscii { param([string]$Path) return ($Path -notmatch '[^\x20-\x7E]') }
+
+function Resolve-AsciiTempDir {
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_WRAPPER_TEMP)) {
+        if (-not (Test-IsAscii $env:CODEX_WRAPPER_TEMP)) {
+            [Console]::Error.WriteLine("Error: `$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)")
+            exit 1
+        }
+        return $env:CODEX_WRAPPER_TEMP
+    }
+    if ((-not [string]::IsNullOrWhiteSpace($env:TEMP)) -and (Test-IsAscii $env:TEMP)) {
+        return $env:TEMP
+    }
+    $cand = "C:\tmp\codex-wrapper-$PID"
+    try {
+        New-Item -ItemType Directory -Path $cand -Force -ErrorAction Stop | Out-Null
+    } catch {
+        [Console]::Error.WriteLine("Error: `$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$cand' is not creatable: $_")
+        [Console]::Error.WriteLine("       Set `$env:CODEX_WRAPPER_TEMP to an ASCII directory.")
+        exit 1
+    }
+    return $cand
+}
+$workDir = Resolve-AsciiTempDir
+
+# --- Run codex from the validated ASCII workdir ---
 $prev = Get-Location
-Set-Location $env:TEMP
+Set-Location $workDir
 try {
     $raw = & $codexCmd @codexArgs 2>&1 | Out-String
     $exit = $LASTEXITCODE

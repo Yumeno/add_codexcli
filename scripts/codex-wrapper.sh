@@ -51,13 +51,16 @@ validate_model() {
 
 # --- Helper: require a value argument for an option ---
 # Usage: require_value <option-name> <remaining-arg-count> "<next-arg>"
-#   <remaining-arg-count>: $# from the caller AFTER the option, so $# >= 1
+#   <remaining-arg-count>: $# from the caller AFTER the option, so >= 1
 #                         means a value-token is present.
-#   <next-arg>:           the value-token itself (may be "--something"). Empty
-#                         string and a -- prefix both count as "missing".
+#   <next-arg>:           the value-token itself; only "missing" if absent.
+# We intentionally accept values that start with "--", e.g. a prompt of
+# "--help": the wrapper passes the prompt to codex via stdin (and uses the
+# `--` separator when not), so a leading-dash value cannot be misparsed as an
+# option later. Treating it as "missing" here would break that contract.
 require_value() {
-    local opt="$1" remaining="$2" next="${3:-}"
-    if [[ "$remaining" -lt 1 || -z "$next" || "$next" == --* ]]; then
+    local opt="$1" remaining="$2"
+    if [[ "$remaining" -lt 1 ]]; then
         echo "Error: $opt requires a value." >&2
         exit 1
     fi
@@ -79,15 +82,24 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Helper: extract `model=value` from config file ---
+# Implemented as a single awk script so a comment-only conf (or one missing the
+# model= line entirely) returns cleanly with no output, instead of the
+# grep-pipeline pattern that, under `set -euo pipefail`, would treat a no-match
+# as failure and kill the whole script.
 read_config_model() {
     [[ -f "$CONFIG_FILE" ]] || return 0
-    grep -E '^[[:space:]]*model[[:space:]]*=' "$CONFIG_FILE" \
-        | grep -vE '^[[:space:]]*#' \
-        | head -1 \
-        | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*//' \
-        | sed -E 's/[[:space:]]+$//' \
-        | sed -E 's/^"(.*)"$/\1/' \
-        | sed -E "s/^'(.*)'\$/\1/"
+    awk '
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*model[[:space:]]*=/ {
+            sub(/^[[:space:]]*model[[:space:]]*=[[:space:]]*/, "")
+            sub(/[[:space:]]+$/, "")
+            if (match($0, /^".*"$/) || match($0, /^'\''.*'\''$/)) {
+                $0 = substr($0, 2, length($0) - 2)
+            }
+            print
+            exit
+        }
+    ' "$CONFIG_FILE"
 }
 
 # --- Subcommand: --set-model (write config) ---
