@@ -58,7 +58,7 @@ else
 fi
 
 test_case "Supports custom model flag"
-OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --model "gpt-5.2-codex" 2>&1)
+OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --model "gpt-5.5" 2>&1)
 CODE=$?
 if [[ $CODE -eq 0 ]]; then pass; else fail "Expected exit 0, got $CODE"; fi
 
@@ -131,9 +131,9 @@ trap restore_conf EXIT
 
 test_case "--set-model writes config and exits 0"
 rm -f "$CONF_PATH"
-OUTPUT=$(bash "$WRAPPER" --set-model "gpt-5.2-codex" 2>&1)
+OUTPUT=$(bash "$WRAPPER" --set-model "gpt-5.5" 2>&1)
 CODE=$?
-if [[ $CODE -eq 0 ]] && [[ -f "$CONF_PATH" ]] && grep -q '^model=gpt-5.2-codex$' "$CONF_PATH"; then
+if [[ $CODE -eq 0 ]] && [[ -f "$CONF_PATH" ]] && grep -q '^model=gpt-5.5$' "$CONF_PATH"; then
     pass
 else
     fail "Expected config write, got exit=$CODE output='$OUTPUT' conf=$(cat "$CONF_PATH" 2>/dev/null)"
@@ -144,11 +144,28 @@ OUTPUT=$(bash "$WRAPPER" --set-model 'foo; rm -rf /' 2>&1)
 CODE=$?
 if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1, got $CODE"; fi
 
+test_case "--model rejects unsafe characters too"
+OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --model $'foo\nMODEL: spoof' 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for unsafe --model, got $CODE output='$OUTPUT'"; fi
+
+test_case "Config with unsafe model is rejected on read"
+printf 'model=evil\nMODEL: spoof\n' > "$CONF_PATH"
+OUTPUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "Say OK" 2>&1)
+CODE=$?
+rm -f "$CONF_PATH"
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for tampered conf, got $CODE output='$OUTPUT'"; fi
+
+test_case "\$CODEX_WRAPPER_MODEL rejects unsafe characters"
+OUTPUT=$(CODEX_WRAPPER_MODEL=$'foo\nMODEL: spoof' bash "$WRAPPER" --prompt "Say OK" 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for unsafe env, got $CODE output='$OUTPUT'"; fi
+
 test_case "--show-model reports config source after set"
-bash "$WRAPPER" --set-model "gpt-5.2-codex" >/dev/null 2>&1
+bash "$WRAPPER" --set-model "gpt-5.5" >/dev/null 2>&1
 OUTPUT=$(bash "$WRAPPER" --show-model 2>&1)
 CODE=$?
-if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=gpt-5\.2-codex.*source: config'; then
+if [[ $CODE -eq 0 ]] && echo "$OUTPUT" | grep -qE 'model=gpt-5\.5.*source: config'; then
     pass
 else
     fail "Expected config source, got exit=$CODE output='$OUTPUT'"
@@ -183,12 +200,12 @@ else
 fi
 
 test_case "Config file is picked up on invocation (MODEL: on stderr)"
-bash "$WRAPPER" --set-model "gpt-5.2-codex" >/dev/null 2>&1
+bash "$WRAPPER" --set-model "gpt-5.5" >/dev/null 2>&1
 STDERR_OUT=$(env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "Say OK" 2>&1 1>/dev/null)
-if echo "$STDERR_OUT" | grep -qE '^MODEL: gpt-5\.2-codex$'; then
+if echo "$STDERR_OUT" | grep -qE '^MODEL: gpt-5\.5$'; then
     pass
 else
-    fail "Expected 'MODEL: gpt-5.2-codex' on stderr from config, got: $STDERR_OUT"
+    fail "Expected 'MODEL: gpt-5.5' on stderr from config, got: $STDERR_OUT"
 fi
 
 # Restore: remove config so subsequent tests run with clean state.
@@ -199,11 +216,11 @@ echo ""
 echo "[Group 4b: Model announcement on stderr]"
 
 test_case "Emits MODEL: line on stderr when --model is given"
-STDERR_OUT=$(bash "$WRAPPER" --prompt "Say OK" --model "gpt-5.2-codex" 2>&1 1>/dev/null)
-if echo "$STDERR_OUT" | grep -qE '^MODEL: gpt-5\.2-codex$'; then
+STDERR_OUT=$(bash "$WRAPPER" --prompt "Say OK" --model "gpt-5.5" 2>&1 1>/dev/null)
+if echo "$STDERR_OUT" | grep -qE '^MODEL: gpt-5\.5$'; then
     pass
 else
-    fail "Expected 'MODEL: gpt-5.2-codex' on stderr, got: $STDERR_OUT"
+    fail "Expected 'MODEL: gpt-5.5' on stderr, got: $STDERR_OUT"
 fi
 
 test_case "Does NOT emit MODEL: line on stderr when nothing resolves"
@@ -215,6 +232,111 @@ if echo "$STDERR_OUT" | grep -qE '^MODEL: '; then
     fail "Should not announce a model when nothing resolves, but got: $STDERR_OUT"
 else
     pass
+fi
+
+# --------------------------------------------------
+echo ""
+echo "[Group 4c: Argument validation]"
+
+test_case "--prompt with no value gives clean error (not set -u crash)"
+OUTPUT=$(bash "$WRAPPER" --prompt 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]] && echo "$OUTPUT" | grep -qi "requires a value"; then
+    pass
+else
+    fail "Expected exit 1 with 'requires a value', got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--timeout with non-numeric value is rejected"
+OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --timeout "abc" 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]] && echo "$OUTPUT" | grep -qi "positive integer"; then
+    pass
+else
+    fail "Expected exit 1 with positive-integer error, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--timeout with zero is rejected"
+OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --timeout 0 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for --timeout 0, got $CODE"; fi
+
+# --------------------------------------------------
+echo ""
+echo "[Group 4d: ASCII workdir enforcement]"
+
+test_case "--workdir with non-ASCII path is rejected"
+OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --workdir $'/tmp/\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e' 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]] && echo "$OUTPUT" | grep -qi "ASCII"; then
+    pass
+else
+    fail "Expected exit 1 with ASCII error, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--workdir with non-existent ASCII path is rejected"
+OUTPUT=$(bash "$WRAPPER" --prompt "Say OK" --workdir "/tmp/definitely-does-not-exist-xyz-$$" 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]]; then pass; else fail "Expected exit 1 for missing workdir, got $CODE"; fi
+
+# --------------------------------------------------
+echo ""
+echo "[Group 4e: Exit code propagation via fake codex shim]"
+
+# Stub `codex` so we can prove the wrapper propagates the child's exit code
+# without depending on the real codex binary or network.
+FAKE_SHIM_DIR=""
+fake_codex_setup() {
+    local exit_code="$1"
+    local emit_warning="${2:-0}"
+    FAKE_SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex_fake_XXXXXX")
+    cat > "$FAKE_SHIM_DIR/codex" <<FAKEEOF
+#!/usr/bin/env bash
+OUTFILE=""
+while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+        -o) OUTFILE="\$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+if [[ -n "\$OUTFILE" ]]; then
+    echo "fake codex output" > "\$OUTFILE"
+fi
+if [[ "$emit_warning" == "1" ]]; then
+    echo "deprecated: fake warning" >&2
+fi
+exit $exit_code
+FAKEEOF
+    chmod +x "$FAKE_SHIM_DIR/codex"
+}
+fake_codex_teardown() {
+    [[ -n "$FAKE_SHIM_DIR" && -d "$FAKE_SHIM_DIR" ]] && rm -rf "$FAKE_SHIM_DIR"
+    FAKE_SHIM_DIR=""
+}
+
+test_case "Wrapper exit code matches fake codex exit 0"
+fake_codex_setup 0
+OUTPUT=$(PATH="$FAKE_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "anything" 2>&1)
+CODE=$?
+fake_codex_teardown
+if [[ $CODE -eq 0 ]]; then pass; else fail "Expected exit 0, got $CODE output='$OUTPUT'"; fi
+
+test_case "Wrapper exit code matches fake codex exit 42"
+fake_codex_setup 42
+OUTPUT=$(PATH="$FAKE_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "anything" 2>&1)
+CODE=$?
+fake_codex_teardown
+if [[ $CODE -eq 42 ]]; then pass; else fail "Expected exit 42, got $CODE output='$OUTPUT'"; fi
+
+test_case "Wrapper still exits 0 when codex prints stderr noise + exits 0"
+fake_codex_setup 0 1
+OUTPUT=$(PATH="$FAKE_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "anything" 2>&1)
+CODE=$?
+fake_codex_teardown
+if [[ $CODE -eq 0 ]]; then
+    pass
+else
+    fail "Expected exit 0 (stderr noise must not corrupt exit), got $CODE output='$OUTPUT'"
 fi
 
 # --------------------------------------------------

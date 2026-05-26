@@ -6,7 +6,7 @@
 #   --prompt        (required for invocation) The prompt to send to Codex
 #   --model         (optional) Model name
 #   --timeout       (optional) Timeout in seconds (default: 120)
-#   --workdir       (optional) Working directory for codex (default: /tmp)
+#   --workdir       (optional) Working directory for codex (default: ASCII temp)
 #   --context       (optional) Additional context to prepend to the prompt
 #   --context-file  (optional) Path to a file containing context (avoids cmdline length limits)
 #
@@ -33,16 +33,46 @@ MAX_CONTEXT_SIZE=102400
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/codex-wrapper.conf"
 
+# Single regex used to validate every model name we touch, regardless of source
+# (CLI flag, env var, conf file, --set-model). The wrapper announces the model
+# on stderr as `MODEL: <name>` and SKILLs grep that line back out, so any
+# newline or shell-meta character here is a protocol-spoofing vector.
+MODEL_NAME_RE='^[A-Za-z0-9._:/-]+$'
+
+validate_model() {
+    # $1: value, $2: source label (for the error message)
+    local value="$1" source="$2"
+    if [[ ! "$value" =~ $MODEL_NAME_RE ]]; then
+        echo "Error: model name from $source contains unsafe characters: '$value'" >&2
+        echo "       Allowed: A-Z a-z 0-9 . _ : / -" >&2
+        exit 1
+    fi
+}
+
+# --- Helper: require a value argument for an option ---
+# Usage: require_value <option-name> <remaining-arg-count> "<next-arg>"
+#   <remaining-arg-count>: $# from the caller AFTER the option, so $# >= 1
+#                         means a value-token is present.
+#   <next-arg>:           the value-token itself (may be "--something"). Empty
+#                         string and a -- prefix both count as "missing".
+require_value() {
+    local opt="$1" remaining="$2" next="${3:-}"
+    if [[ "$remaining" -lt 1 || -z "$next" || "$next" == --* ]]; then
+        echo "Error: $opt requires a value." >&2
+        exit 1
+    fi
+}
+
 # --- Parse arguments ---
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --prompt)       PROMPT="$2"; shift 2 ;;
-        --model)        MODEL="$2"; shift 2 ;;
-        --timeout)      TIMEOUT="$2"; shift 2 ;;
-        --workdir)      WORKDIR="$2"; shift 2 ;;
-        --context)      CONTEXT="$2"; shift 2 ;;
-        --context-file) CONTEXT_FILE="$2"; shift 2 ;;
-        --set-model)    SET_MODEL="$2"; shift 2 ;;
+        --prompt)       require_value "$1" "$(( $# - 1 ))" "${2:-}"; PROMPT="$2"; shift 2 ;;
+        --model)        require_value "$1" "$(( $# - 1 ))" "${2:-}"; MODEL="$2"; shift 2 ;;
+        --timeout)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; TIMEOUT="$2"; shift 2 ;;
+        --workdir)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; WORKDIR="$2"; shift 2 ;;
+        --context)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT="$2"; shift 2 ;;
+        --context-file) require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT_FILE="$2"; shift 2 ;;
+        --set-model)    require_value "$1" "$(( $# - 1 ))" "${2:-}"; SET_MODEL="$2"; shift 2 ;;
         --show-model)   SHOW_MODEL=1; shift ;;
         *) echo "Error: Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -60,14 +90,9 @@ read_config_model() {
         | sed -E "s/^'(.*)'\$/\1/"
 }
 
-# --- Subcommand: --set-model (write config, exit before validation) ---
+# --- Subcommand: --set-model (write config) ---
 if [[ -n "$SET_MODEL" ]]; then
-    # Allow model-name-like identifiers only. Blocks $, `, ;, spaces, etc.
-    if [[ ! "$SET_MODEL" =~ ^[A-Za-z0-9._:/-]+$ ]]; then
-        echo "Error: model name '$SET_MODEL' contains unsafe characters." >&2
-        echo "       Allowed: A-Z a-z 0-9 . _ : / -" >&2
-        exit 1
-    fi
+    validate_model "$SET_MODEL" "--set-model"
     cat > "$CONFIG_FILE" <<CONFEOF
 # codex-wrapper.conf
 # Default options for codex-wrapper.sh / codex-wrapper.ps1.
@@ -89,13 +114,16 @@ fi
 # --- Resolve effective model (priority: --model > env > config) ---
 MODEL_SOURCE=""
 if [[ -n "$MODEL" ]]; then
+    validate_model "$MODEL" "--model"
     MODEL_SOURCE="cli"
 elif [[ -n "${CODEX_WRAPPER_MODEL:-}" ]]; then
+    validate_model "$CODEX_WRAPPER_MODEL" "\$CODEX_WRAPPER_MODEL"
     MODEL="$CODEX_WRAPPER_MODEL"
     MODEL_SOURCE="env"
 else
     CONFIG_MODEL=$(read_config_model)
     if [[ -n "$CONFIG_MODEL" ]]; then
+        validate_model "$CONFIG_MODEL" "$CONFIG_FILE"
         MODEL="$CONFIG_MODEL"
         MODEL_SOURCE="config"
     fi
@@ -104,6 +132,8 @@ fi
 # --- Subcommand: --show-model (print resolved model, exit) ---
 if [[ -n "$SHOW_MODEL" ]]; then
     if [[ -n "$MODEL" ]]; then
+        # MODEL has been validate_model()'d above, so printing it here cannot
+        # smuggle extra lines or shell metacharacters.
         echo "model=$MODEL (source: $MODEL_SOURCE)"
         if [[ "$MODEL_SOURCE" == "config" ]]; then
             echo "config_file=$CONFIG_FILE"
@@ -125,6 +155,11 @@ if [[ -z "$PROMPT" ]]; then
     exit 1
 fi
 
+if [[ ! "$TIMEOUT" =~ ^[0-9]+$ || "$TIMEOUT" -le 0 ]]; then
+    echo "Error: --timeout must be a positive integer (got: '$TIMEOUT')." >&2
+    exit 1
+fi
+
 # --- Load context from file if specified ---
 if [[ -n "$CONTEXT_FILE" ]]; then
     if [[ ! -f "$CONTEXT_FILE" ]]; then
@@ -142,10 +177,54 @@ if [[ -n "$CONTEXT" ]]; then
     fi
 fi
 
-# --- Determine safe working directory ---
-if [[ -z "$WORKDIR" ]]; then
-    WORKDIR="${TMPDIR:-/tmp}"
-fi
+# --- Resolve & verify an ASCII-only working directory ---
+# Codex CLI's WebSocket layer fails on non-ASCII paths, so a non-ASCII workdir
+# is a hard error. Resolution chain mirrors codex-wrapper.ps1:
+#   1. --workdir if given (ASCII-checked)
+#   2. $CODEX_WRAPPER_TEMP env var
+#   3. $TMPDIR / /tmp if ASCII
+#   4. auto-create /tmp/codex-wrapper-$$
+#   5. explicit error
+is_ascii() {
+    # Returns 0 if $1 contains only printable ASCII (no control chars besides /).
+    LC_ALL=C grep -q '^[ -~]*$' <<< "$1"
+}
+
+resolve_workdir() {
+    local candidate=""
+    if [[ -n "$WORKDIR" ]]; then
+        if ! is_ascii "$WORKDIR"; then
+            echo "Error: --workdir must be ASCII-only due to Codex CLI WebSocket limitations: $WORKDIR" >&2
+            exit 1
+        fi
+        candidate="$WORKDIR"
+    elif [[ -n "${CODEX_WRAPPER_TEMP:-}" ]]; then
+        if ! is_ascii "$CODEX_WRAPPER_TEMP"; then
+            echo "Error: \$CODEX_WRAPPER_TEMP must be ASCII-only: $CODEX_WRAPPER_TEMP" >&2
+            exit 1
+        fi
+        candidate="$CODEX_WRAPPER_TEMP"
+    else
+        local tmp="${TMPDIR:-/tmp}"
+        if is_ascii "$tmp"; then
+            candidate="$tmp"
+        else
+            # Build a per-process ASCII fallback under /tmp.
+            candidate="/tmp/codex-wrapper-$$"
+            if ! mkdir -p "$candidate" 2>/dev/null; then
+                echo "Error: \$TMPDIR is non-ASCII ('$tmp') and fallback '$candidate' is not creatable." >&2
+                echo "       Set \$CODEX_WRAPPER_TEMP or --workdir to an ASCII directory." >&2
+                exit 1
+            fi
+        fi
+    fi
+    if [[ ! -d "$candidate" ]]; then
+        echo "Error: workdir does not exist: $candidate" >&2
+        exit 1
+    fi
+    WORKDIR="$candidate"
+}
+resolve_workdir
 
 # --- Build the full prompt ---
 if [[ -n "$CONTEXT" ]]; then
@@ -158,9 +237,9 @@ else
     FULL_PROMPT="$PROMPT"
 fi
 
-# --- Temp files ---
-OUT_FILE=$(mktemp "${TMPDIR:-/tmp}/codex_out_XXXXXX.txt")
-ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/codex_err_XXXXXX.txt")
+# --- Temp files (placed under the validated ASCII workdir) ---
+OUT_FILE=$(mktemp "$WORKDIR/codex_out_XXXXXX.txt")
+ERR_FILE=$(mktemp "$WORKDIR/codex_err_XXXXXX.txt")
 
 cleanup() {
     rm -f "$OUT_FILE" "$ERR_FILE"

@@ -60,7 +60,7 @@ fi
 ```
 ## codex-wrapper の現在のモデル設定
 
-(コマンドの出力をそのまま貼る。例: model=gpt-5.2-codex (source: config))
+(コマンドの出力をそのまま貼る。例: model=gpt-5.5 (source: config))
 
 ---
 *変更するには `/set-codex-model <モデル名>`*
