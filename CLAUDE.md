@@ -12,7 +12,7 @@ Claude Code から Codex CLI をセカンドオピニオンとして呼び出す
 
 ## 重要な制約
 
-- Codex CLI は ChatGPT Plus 認証では `gpt-5.2-codex` モデルのみ利用可
+- Codex CLI は ChatGPT Plus 認証では限定されたモデルセットのみ利用可（現行 `gpt-5.5` 等）。利用可能なモデルは `codex debug models` または `/list-codex-models` で確認
 - 日本語パスで WebSocket エラーが出るため、`codex exec` 呼び出し時は `-C /tmp` 等で ASCII パスを指定する
 - 外部パッケージは一切使わない（サプライチェーン攻撃対策）
 - スキルは `disable-model-invocation: true` で手動起動のみにする
