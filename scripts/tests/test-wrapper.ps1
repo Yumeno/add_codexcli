@@ -377,6 +377,24 @@ Test-Case "-WorkDir with non-existent ASCII path is rejected" {
 
 # --------------------------------------------------
 Write-Host ""
+Write-Host "[Group 4e: UTF-8 console encoding (regression for #12)]" -ForegroundColor Yellow
+
+Test-Case "Wrapper pins console output encoding to UTF-8" {
+    # Probe the wrapper's encoding by asking PowerShell to print encoding state
+    # right after dot-sourcing the wrapper. We can't dot-source directly (it
+    # would try to run codex), so we extract the two encoding lines and verify
+    # they exist verbatim in the file.
+    $body = Get-Content $Wrapper -Encoding UTF8 -Raw
+    if ($body -notmatch '\[Console\]::OutputEncoding\s*=\s*\[System\.Text\.Encoding\]::UTF8') {
+        throw "Wrapper does not force [Console]::OutputEncoding to UTF-8 — issue #12 fix missing"
+    }
+    if ($body -notmatch '\$OutputEncoding\s*=\s*\[System\.Text\.Encoding\]::UTF8') {
+        throw "Wrapper does not force `$OutputEncoding to UTF-8 — issue #12 fix missing"
+    }
+}
+
+# --------------------------------------------------
+Write-Host ""
 Write-Host "[Group 5: Context File Support]" -ForegroundColor Yellow
 
 Test-Case "Accepts -ContextFile parameter" {

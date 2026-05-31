@@ -24,6 +24,14 @@ param(
     [switch]$ShowModel
 )
 
+# Force UTF-8 on stdout/stderr so Japanese (and other non-ASCII) round-trips
+# correctly through msys/bash pipes. On JP Windows the Console default is
+# CP932 (Shift-JIS), which corrupts the UTF-8 we already produce internally.
+# - [Console]::OutputEncoding: bytes .NET writes to stdout/stderr
+# - $OutputEncoding: encoding PS uses when piping to external processes
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # Max context size in bytes before warning (100KB)
 $MaxContextSize = 102400
 
