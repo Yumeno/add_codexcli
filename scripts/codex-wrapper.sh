@@ -6,9 +6,13 @@
 #   --prompt        (required for invocation) The prompt to send to Codex
 #   --model         (optional) Model name
 #   --timeout       (optional) Timeout in seconds (default: 120)
-#   --workdir       (optional) Working directory for codex (default: ASCII temp)
+#   --cd            (optional) Working directory for codex (default: ASCII temp)
+#   --workdir       (optional, alias for --cd; kept for backward compatibility)
 #   --context       (optional) Additional context to prepend to the prompt
 #   --context-file  (optional) Path to a file containing context (avoids cmdline length limits)
+#   --sandbox MODE  (optional) Codex sandbox mode: read-only | workspace-write | danger-full-access
+#                   Default: read-only. Matches codex CLI's implicit default for non-VCS workdirs
+#                   and prevents the workspace-write+on-request stall when --cd points at a git repo.
 #
 # Config subcommands (do not invoke codex):
 #   --set-model NAME  Persist NAME as the default model in codex-wrapper.conf
@@ -22,8 +26,20 @@ TIMEOUT=120
 WORKDIR=""
 CONTEXT=""
 CONTEXT_FILE=""
+HAS_CONTEXT=0
+SANDBOX="read-only"
 SET_MODEL=""
 SHOW_MODEL=""
+
+# Exit status from the codex subprocess. Pre-initialised so it is always
+# defined under `set -u`, regardless of which timeout branch we land in.
+CODEX_EXIT=0
+
+# Sandbox modes accepted by `codex exec -s`. Anything outside this set is
+# rejected before we hand off to codex, both to fail fast on typos and to keep
+# wrapper behaviour stable when the Codex CLI gains new modes (those would need
+# an explicit wrapper update, which is the safer default for a wrapper).
+SANDBOX_MODES_RE='^(read-only|workspace-write|danger-full-access)$'
 
 # Max context size in bytes before warning (100KB)
 MAX_CONTEXT_SIZE=102400
@@ -72,9 +88,10 @@ while [[ $# -gt 0 ]]; do
         --prompt)       require_value "$1" "$(( $# - 1 ))" "${2:-}"; PROMPT="$2"; shift 2 ;;
         --model)        require_value "$1" "$(( $# - 1 ))" "${2:-}"; MODEL="$2"; shift 2 ;;
         --timeout)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; TIMEOUT="$2"; shift 2 ;;
-        --workdir)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; WORKDIR="$2"; shift 2 ;;
-        --context)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT="$2"; shift 2 ;;
+        --cd|--workdir) require_value "$1" "$(( $# - 1 ))" "${2:-}"; WORKDIR="$2"; shift 2 ;;
+        --context)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT="$2"; HAS_CONTEXT=1; shift 2 ;;
         --context-file) require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT_FILE="$2"; shift 2 ;;
+        --sandbox)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; SANDBOX="$2"; shift 2 ;;
         --set-model)    require_value "$1" "$(( $# - 1 ))" "${2:-}"; SET_MODEL="$2"; shift 2 ;;
         --show-model)   SHOW_MODEL=1; shift ;;
         *) echo "Error: Unknown option: $1" >&2; exit 1 ;;
@@ -172,17 +189,29 @@ if [[ ! "$TIMEOUT" =~ ^[0-9]+$ || "$TIMEOUT" -le 0 ]]; then
     exit 1
 fi
 
+# --- Sandbox validation ---
+# Done after parse so a typo in --sandbox surfaces before we resolve the model
+# or touch the filesystem.
+if [[ ! "$SANDBOX" =~ $SANDBOX_MODES_RE ]]; then
+    echo "Error: --sandbox must be one of: read-only | workspace-write | danger-full-access (got: '$SANDBOX')." >&2
+    exit 1
+fi
+
 # --- Load context from file if specified ---
 if [[ -n "$CONTEXT_FILE" ]]; then
     if [[ ! -f "$CONTEXT_FILE" ]]; then
         echo "Error: Context file not found: $CONTEXT_FILE" >&2
         exit 1
     fi
+    # Preserve "context was requested" even if the file is empty: an empty
+    # context-file means the caller wanted *no extra context*, not "fall back
+    # to argv-only behaviour". Tests rely on this distinction.
     CONTEXT=$(cat "$CONTEXT_FILE")
+    HAS_CONTEXT=1
 fi
 
 # --- Context size warning ---
-if [[ -n "$CONTEXT" ]]; then
+if [[ "$HAS_CONTEXT" -eq 1 ]]; then
     CONTEXT_SIZE=${#CONTEXT}
     if [[ $CONTEXT_SIZE -gt $MAX_CONTEXT_SIZE ]]; then
         echo "Warning: Context is large ($(( CONTEXT_SIZE / 1024 ))KB). This may slow down the request." >&2
@@ -238,17 +267,6 @@ resolve_workdir() {
 }
 resolve_workdir
 
-# --- Build the full prompt ---
-if [[ -n "$CONTEXT" ]]; then
-    FULL_PROMPT="${CONTEXT}
-
----
-
-${PROMPT}"
-else
-    FULL_PROMPT="$PROMPT"
-fi
-
 # --- Temp files (placed under the validated ASCII workdir) ---
 OUT_FILE=$(mktemp "$WORKDIR/codex_out_XXXXXX.txt")
 ERR_FILE=$(mktemp "$WORKDIR/codex_err_XXXXXX.txt")
@@ -258,8 +276,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- Build codex command (-- separates options from prompt) ---
-CODEX_ARGS=(exec -C "$WORKDIR" --skip-git-repo-check --ephemeral -o "$OUT_FILE")
+# --- Build codex command ---
+# Context (if any) is streamed via stdin so it does not hit argv length limits
+# and is not subject to shell quoting on the codex side. PROMPT stays on argv as
+# the positional argument; `codex exec` documents that stdin is appended as a
+# `<stdin>` block when both are provided.
+#
+# Sandbox: --sandbox is always passed. Default is read-only, which mirrors
+# codex CLI's implicit default for non-VCS workdirs and avoids the
+# workspace-write + on-request stall (540s timeout per issue #14) when --cd
+# resolves to a git repository.
+CODEX_ARGS=(exec -C "$WORKDIR" -s "$SANDBOX" --skip-git-repo-check --ephemeral -o "$OUT_FILE")
 
 if [[ -n "$MODEL" ]]; then
     CODEX_ARGS+=(-m "$MODEL")
@@ -270,26 +297,40 @@ if [[ -n "$MODEL" ]]; then
     echo "MODEL: $MODEL" >&2
 fi
 
-CODEX_ARGS+=(--)
-CODEX_ARGS+=("$FULL_PROMPT")
+# `--` separates options from the prompt positional. We keep it even though
+# require_value allows --*-leading values, because codex's own argv parser
+# may not.
+CODEX_ARGS+=(-- "$PROMPT")
 
 # --- Execute with timeout ---
-CODEX_EXIT=0
+# When context is present, feed it via stdin using process substitution rather
+# than a pipeline. A pipeline would put `codex` on the RHS of `|`, and under
+# `set -euo pipefail` we would need PIPESTATUS gymnastics to extract codex's
+# real exit code separately from printf's. Process substitution sidesteps both
+# issues: codex's exit is the command's exit.
+run_codex() {
+    if [[ "$HAS_CONTEXT" -eq 1 ]]; then
+        "$@" codex "${CODEX_ARGS[@]}" 2>"$ERR_FILE" < <(printf '%s' "$CONTEXT")
+    else
+        "$@" codex "${CODEX_ARGS[@]}" 2>"$ERR_FILE" </dev/null
+    fi
+}
+
 if command -v timeout &>/dev/null; then
-    timeout "${TIMEOUT}s" codex "${CODEX_ARGS[@]}" 2>"$ERR_FILE" || CODEX_EXIT=$?
+    run_codex timeout "${TIMEOUT}s" || CODEX_EXIT=$?
     if [[ $CODEX_EXIT -eq 124 ]]; then
         echo "Error: Codex CLI timed out after ${TIMEOUT}s" >&2
         exit 2
     fi
 elif command -v gtimeout &>/dev/null; then
-    gtimeout "${TIMEOUT}s" codex "${CODEX_ARGS[@]}" 2>"$ERR_FILE" || CODEX_EXIT=$?
+    run_codex gtimeout "${TIMEOUT}s" || CODEX_EXIT=$?
     if [[ $CODEX_EXIT -eq 124 ]]; then
         echo "Error: Codex CLI timed out after ${TIMEOUT}s" >&2
         exit 2
     fi
 else
     # Fallback: no timeout command available (timeout disabled)
-    codex "${CODEX_ARGS[@]}" 2>"$ERR_FILE" || CODEX_EXIT=$?
+    run_codex || CODEX_EXIT=$?
 fi
 
 # --- Read output ---
