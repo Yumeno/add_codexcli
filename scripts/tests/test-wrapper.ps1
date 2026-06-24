@@ -609,11 +609,18 @@ Test-Case "Convert-ArgumentToCommandLine handles CommandLineToArgvW edge cases" 
 
     $cases = @(
         @{ In = 'plain';                  Expected = 'plain' }
+        @{ In = '';                       Expected = '""' }
         @{ In = 'with space';             Expected = '"with space"' }
         @{ In = 'has"quote';              Expected = '"has\"quote"' }
         @{ In = 'ends\';                  Expected = 'ends\' }
         @{ In = 'C:\path with space\';    Expected = '"C:\path with space\\"' }
         @{ In = 'a\\"b';                  Expected = '"a\\\\\"b"' }
+        # Additional cases from Codex review:
+        @{ In = 'a\b';                    Expected = 'a\b' }           # no ws/quote: no wrap
+        @{ In = 'a\b\';                   Expected = 'a\b\' }          # trailing backslash but no ws/quote
+        @{ In = 'a\b c\';                 Expected = '"a\b c\\"' }     # ws → wrap, trailing \ doubled
+        @{ In = "line1`nline2";           Expected = "`"line1`nline2`"" }  # newline is whitespace
+        @{ In = "tab`there";              Expected = "`"tab`there`"" }     # tab is whitespace
     )
     $fails = @()
     foreach ($c in $cases) {
