@@ -369,6 +369,171 @@ fi
 
 # --------------------------------------------------
 echo ""
+echo "[Group 4f: Recording shim — stdin vs argv separation (issue #14)]"
+
+# A second fake-codex shim that records (a) every argv as a JSON-ish line and
+# (b) the full stdin to inspection files. This lets us assert that:
+#   - context flows via stdin, not argv (no truncation, no shell quoting)
+#   - the wrapper still passes --sandbox / --cd / model on argv
+#   - shell metacharacters embedded in context cannot leak into argv
+REC_SHIM_DIR=""
+REC_ARGV=""
+REC_STDIN=""
+rec_codex_setup() {
+    REC_SHIM_DIR=$(mktemp -d "${TMPDIR:-/tmp}/codex_rec_XXXXXX")
+    REC_ARGV="$REC_SHIM_DIR/argv.txt"
+    REC_STDIN="$REC_SHIM_DIR/stdin.bin"
+    cat > "$REC_SHIM_DIR/codex" <<RECEOF
+#!/usr/bin/env bash
+# Record argv (one per line) and full stdin to inspection files, then act like
+# a minimal codex exec: extract -o <file> and write a marker into it.
+printf '%s\n' "\$@" > "$REC_ARGV"
+cat > "$REC_STDIN"
+OUTFILE=""
+while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+        -o) OUTFILE="\$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+[[ -n "\$OUTFILE" ]] && echo "rec codex output" > "\$OUTFILE"
+exit 0
+RECEOF
+    chmod +x "$REC_SHIM_DIR/codex"
+}
+rec_codex_teardown() {
+    [[ -n "$REC_SHIM_DIR" && -d "$REC_SHIM_DIR" ]] && rm -rf "$REC_SHIM_DIR"
+    REC_SHIM_DIR=""; REC_ARGV=""; REC_STDIN=""
+}
+
+test_case "Context arrives on stdin, not argv"
+rec_codex_setup
+CTX_PAYLOAD="UNIQUE_CONTEXT_SENTINEL_$$_$(date +%s)"
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" --context "$CTX_PAYLOAD" 2>&1)
+CODE=$?
+if [[ $CODE -ne 0 ]]; then
+    fail "wrapper exited $CODE: $OUTPUT"
+elif grep -qF "$CTX_PAYLOAD" "$REC_ARGV"; then
+    fail "context leaked into argv: $(grep -F "$CTX_PAYLOAD" "$REC_ARGV")"
+elif ! grep -qF "$CTX_PAYLOAD" "$REC_STDIN"; then
+    fail "context did not arrive on stdin"
+else
+    pass
+fi
+rec_codex_teardown
+
+test_case "No context => stdin is empty (no spurious bytes)"
+rec_codex_setup
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" 2>&1)
+CODE=$?
+STDIN_SIZE=$(wc -c < "$REC_STDIN" 2>/dev/null || echo "?")
+if [[ $CODE -eq 0 ]] && [[ "$STDIN_SIZE" == "0" ]]; then
+    pass
+else
+    fail "expected empty stdin, got size=$STDIN_SIZE exit=$CODE output=$OUTPUT"
+fi
+rec_codex_teardown
+
+test_case "Shell metacharacters in context do not leak into argv"
+# Context contains text that, if naively expanded as a shell word, would change
+# argv. With stdin transport these should appear verbatim on stdin, not argv.
+rec_codex_setup
+INJECTION=$'--sandbox danger-full-access\n--add-dir /etc\n$(rm -rf /)\n`whoami`'
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" --context "$INJECTION" 2>&1)
+CODE=$?
+LEAK=0
+if grep -qE '^--sandbox$' "$REC_ARGV"; then
+    # Wrapper itself always passes one --sandbox; it must be exactly one.
+    if [[ $(grep -cE '^--sandbox$' "$REC_ARGV") -ne 1 ]]; then LEAK=1; fi
+fi
+if grep -qE '^--add-dir$' "$REC_ARGV"; then LEAK=1; fi
+if grep -qF 'danger-full-access' "$REC_ARGV"; then
+    # Allowed only if the user passed --sandbox themselves (we did not here).
+    LEAK=1
+fi
+if [[ $CODE -eq 0 ]] && [[ $LEAK -eq 0 ]] && grep -qF '$(rm -rf /)' "$REC_STDIN"; then
+    pass
+else
+    fail "exit=$CODE leak=$LEAK argv:$(cat "$REC_ARGV") stdin-head:$(head -c 200 "$REC_STDIN")"
+fi
+rec_codex_teardown
+
+test_case "Large context (128KB) is delivered intact via stdin"
+rec_codex_setup
+LARGE_CTX=$(mktemp "${TMPDIR:-/tmp}/test_largectx_XXXXXX.txt")
+# 128KB of stable content; head/tail markers let us detect truncation.
+{ echo "HEAD_MARKER_$$"; python3 -c "print('a' * 131000)" 2>/dev/null \
+    || printf '%.0sa' $(seq 1 131000); echo; echo "TAIL_MARKER_$$"; } > "$LARGE_CTX"
+LARGE_SIZE=$(wc -c < "$LARGE_CTX")
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "summarize" --context-file "$LARGE_CTX" 2>&1)
+CODE=$?
+STDIN_SIZE=$(wc -c < "$REC_STDIN")
+HEAD_OK=0; TAIL_OK=0
+grep -qF "HEAD_MARKER_$$" "$REC_STDIN" && HEAD_OK=1
+grep -qF "TAIL_MARKER_$$" "$REC_STDIN" && TAIL_OK=1
+rm -f "$LARGE_CTX"
+# `CONTEXT=$(cat ...)` strips trailing newline(s), so stdin will be 1-2 bytes
+# shorter than the file. Accept that as long as both markers survived.
+if [[ $CODE -eq 0 ]] && [[ $HEAD_OK -eq 1 ]] && [[ $TAIL_OK -eq 1 ]] \
+   && [[ $STDIN_SIZE -ge $((LARGE_SIZE - 2)) ]]; then
+    pass
+else
+    fail "exit=$CODE file=$LARGE_SIZE stdin=$STDIN_SIZE head=$HEAD_OK tail=$TAIL_OK"
+fi
+rec_codex_teardown
+
+test_case "--sandbox read-only is the default on argv"
+rec_codex_setup
+PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" >/dev/null 2>&1
+if grep -qE '^-s$' "$REC_ARGV" && grep -qE '^read-only$' "$REC_ARGV"; then
+    pass
+else
+    fail "Expected -s read-only on argv, got: $(cat "$REC_ARGV")"
+fi
+rec_codex_teardown
+
+test_case "--sandbox workspace-write is passed through"
+rec_codex_setup
+PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" --sandbox workspace-write >/dev/null 2>&1
+if grep -qE '^workspace-write$' "$REC_ARGV"; then
+    pass
+else
+    fail "Expected workspace-write on argv, got: $(cat "$REC_ARGV")"
+fi
+rec_codex_teardown
+
+test_case "--sandbox rejects values outside the whitelist"
+OUTPUT=$(bash "$WRAPPER" --prompt "hi" --sandbox bogus-mode 2>&1)
+CODE=$?
+if [[ $CODE -eq 1 ]] && echo "$OUTPUT" | grep -qi "sandbox"; then
+    pass
+else
+    fail "Expected exit 1 on bogus sandbox, got exit=$CODE output='$OUTPUT'"
+fi
+
+test_case "--cd is accepted as an alias for --workdir"
+rec_codex_setup
+ALIAS_WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/cdalias_XXXXXX")
+PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" --cd "$ALIAS_WORKDIR" >/dev/null 2>&1
+CODE=$?
+# The wrapper passes -C <workdir>. We check the workdir we asked for shows up.
+if [[ $CODE -eq 0 ]] && grep -qF "$ALIAS_WORKDIR" "$REC_ARGV"; then
+    pass
+else
+    fail "Expected --cd alias to feed -C <dir>; argv: $(cat "$REC_ARGV")"
+fi
+rm -rf "$ALIAS_WORKDIR"
+rec_codex_teardown
+
+# --------------------------------------------------
+echo ""
 echo "[Group 5: Context File Support]"
 
 test_case "Accepts --context-file parameter"
