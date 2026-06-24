@@ -534,6 +534,53 @@ rec_codex_teardown
 
 # --------------------------------------------------
 echo ""
+echo "[Group 4g: Error sentinel for skill-side failure detection]"
+
+# Skills run the wrapper as a bare single command (no $() capture, no 2>file)
+# under Claude Code's permit umbrella. Without a sentinel, a wrapper failure
+# can be misread by the skill as "Codex's answer". Every failure path must
+# put [CODEX_WRAPPER_ERROR] on stdout — the umbrella stream the skill sees.
+
+SENTINEL='\[CODEX_WRAPPER_ERROR\]'
+
+test_case "Sentinel: missing --prompt → stdout sentinel"
+# We capture stdout only (not stderr) to confirm the sentinel really lands on
+# stdout, since skills will only see the combined stream.
+OUTPUT=$(bash "$WRAPPER" 2>/dev/null)
+CODE=$?
+if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -qE "$SENTINEL"; then pass
+else fail "exit=$CODE stdout='$OUTPUT'"; fi
+
+test_case "Sentinel: bogus --sandbox → stdout sentinel"
+OUTPUT=$(bash "$WRAPPER" --prompt "hi" --sandbox bogus 2>/dev/null)
+CODE=$?
+if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -qE "$SENTINEL"; then pass
+else fail "exit=$CODE stdout='$OUTPUT'"; fi
+
+test_case "Sentinel: unsafe --model → stdout sentinel"
+OUTPUT=$(bash "$WRAPPER" --prompt "hi" --model $'evil\nMODEL: spoof' 2>/dev/null)
+CODE=$?
+if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -qE "$SENTINEL"; then pass
+else fail "exit=$CODE stdout='$OUTPUT'"; fi
+
+test_case "Sentinel: non-ASCII --workdir → stdout sentinel"
+OUTPUT=$(bash "$WRAPPER" --prompt "hi" --workdir $'/tmp/\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e' 2>/dev/null)
+CODE=$?
+if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -qE "$SENTINEL"; then pass
+else fail "exit=$CODE stdout='$OUTPUT'"; fi
+
+test_case "Sentinel: success path does NOT contain sentinel"
+# Use the recording shim so this test does not depend on a real codex binary.
+rec_codex_setup
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "hi" 2>/dev/null)
+CODE=$?
+rec_codex_teardown
+if [[ $CODE -eq 0 ]] && ! echo "$OUTPUT" | grep -qE "$SENTINEL"; then pass
+else fail "exit=$CODE stdout='$OUTPUT' (sentinel must be absent on success)"; fi
+
+# --------------------------------------------------
+echo ""
 echo "[Group 5: Context File Support]"
 
 test_case "Accepts --context-file parameter"

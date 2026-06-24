@@ -53,6 +53,25 @@ bash "$HOME/.claude/scripts/codex-wrapper.sh" --prompt "質問文"
 
 ### 3. Codex の回答を表示する
 
+#### 失敗検知 (重要)
+
+wrapper が失敗したとき、**stdout の先頭に `[CODEX_WRAPPER_ERROR]` で始まる行が出る**。
+これは「素の 1 コマンド呼び」で stdout/stderr を分離しない運用でも、Claude が
+「これは Codex の回答ではなく wrapper の失敗だ」と確実に判別できるようにするための sentinel。
+
+tool result の中に `[CODEX_WRAPPER_ERROR]` が含まれていたら、**Codex の回答ではなく
+wrapper のエラーとして提示する**。例:
+
+```
+## Codex CLI 呼び出しに失敗しました
+
+(sentinel 行とそれ以降のエラー詳細をそのまま掲示)
+```
+
+成功時は sentinel が出ないので、以下の通常フォーマットを使う。
+
+#### 通常のフォーマット (成功時)
+
 stderr を分離しない運用ではモデル名は取得できないので、フッターは常に以下の「モデル未指定」形式を使う。
 **固定のモデル名を書くのは嘘になるため絶対にしない。**
 `-Model` を明示的に渡した場合のみ、その値を使ってよい。

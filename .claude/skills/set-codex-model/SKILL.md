@@ -57,7 +57,21 @@ bash "$HOME/.claude/scripts/codex-wrapper.sh" --show-model
 bash "$HOME/.claude/scripts/codex-wrapper.sh" --set-model "gpt-5.5"
 ```
 
-### 2. 結果を以下の形式で提示
+### 2. 失敗検知 (重要)
+
+wrapper が失敗したとき (例: 不正な文字を含むモデル名)、**stdout の先頭に
+`[CODEX_WRAPPER_ERROR]` で始まる行が出る**。tool result の中に `[CODEX_WRAPPER_ERROR]`
+が含まれていたら、**成功扱いせず wrapper のエラーとして提示する**。例:
+
+```
+## codex-wrapper の呼び出しに失敗しました
+
+(sentinel 行とそれ以降のエラー詳細をそのまま掲示)
+```
+
+成功時は sentinel が出ないので、以下の通常フォーマットを使う。
+
+### 3. 結果を以下の形式で提示
 
 **引数なし（現状表示）の場合**:
 ```
@@ -80,8 +94,13 @@ bash "$HOME/.claude/scripts/codex-wrapper.sh" --set-model "gpt-5.5"
 *以後 `/ask-codex` や `/ask-codex-with-context` で `--model` / `-Model` 未指定の場合、このモデルが使われます。*
 ```
 
-### 3. エラー時の対応
+### 4. 特定のエラーパターンへの補足
 
-不正な文字を含むモデル名等で wrapper が exit code 1 を返した場合、stderr の内容は
-**通常運用 (素の 1 コマンド呼び) では tool result の混合 stream に出る**。
-ユーザーには「モデル名の文字が許可されない (英数 / `.` / `_` / `:` / `/` / `-` のみ可)」旨を伝える。
+ステップ 2 の失敗検知 (`[CODEX_WRAPPER_ERROR]` sentinel) で wrapper の失敗を検出した上で、
+特に **モデル名に不正な文字が含まれていた** ケースでは sentinel の後に以下のような行が続く:
+
+```
+[CODEX_WRAPPER_ERROR] model name from -SetModel contains unsafe characters: '...' (allowed: A-Z a-z 0-9 . _ : / -)
+```
+
+このパターンを見つけたら、ユーザーには **「モデル名の文字が許可されない (英数 / `.` / `_` / `:` / `/` / `-` のみ可)」** 旨を平易に伝える。

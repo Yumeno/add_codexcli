@@ -636,6 +636,72 @@ Test-Case "Convert-ArgumentToCommandLine handles CommandLineToArgvW edge cases" 
 
 # --------------------------------------------------
 Write-Host ""
+Write-Host "[Group 4g: Error sentinel for skill-side failure detection]" -ForegroundColor Yellow
+
+# Skills run the wrapper as a bare single command (no $() capture, no 2>file)
+# under Claude Code's permit umbrella. Without a sentinel, a wrapper failure
+# can be misread by the skill as "Codex's answer". Every failure path must
+# put [CODEX_WRAPPER_ERROR] on stdout — the umbrella stream the skill sees.
+
+$Sentinel = '\[CODEX_WRAPPER_ERROR\]'
+
+Test-Case "Sentinel: missing -Prompt → stdout sentinel" {
+    $r = Invoke-Wrapper @()
+    if ($r.ExitCode -eq 0) { throw "expected non-zero exit, got 0" }
+    if ($r.Output -notmatch $Sentinel) {
+        throw "stdout did not contain sentinel. Output: $($r.Output)"
+    }
+}
+
+Test-Case "Sentinel: bogus -SandboxMode → stdout sentinel (not PS ValidateSet error)" {
+    # ValidateSet would fail before the script body runs and emit a PS-level
+    # error with no sentinel. We removed ValidateSet for that reason; this
+    # test guards against regressing it.
+    $r = Invoke-Wrapper @("-Prompt", "hi", "-SandboxMode", "bogus")
+    if ($r.ExitCode -eq 0) { throw "expected non-zero exit, got 0" }
+    if ($r.Output -notmatch $Sentinel) {
+        throw "stdout did not contain sentinel. Output: $($r.Output)"
+    }
+    if ($r.Output -match 'ValidateSet') {
+        throw "Output mentions ValidateSet — PS-level validation re-introduced? Output: $($r.Output)"
+    }
+}
+
+Test-Case "Sentinel: unsafe -Model → stdout sentinel" {
+    $r = Invoke-Wrapper @("-Prompt", "hi", "-Model", "evil`nMODEL: spoof")
+    if ($r.ExitCode -eq 0) { throw "expected non-zero exit, got 0" }
+    if ($r.Output -notmatch $Sentinel) {
+        throw "stdout did not contain sentinel. Output: $($r.Output)"
+    }
+}
+
+Test-Case "Sentinel: -Cd + -WorkDir together → stdout sentinel" {
+    $tmpDir = Join-Path $env:TEMP "sentinel_dup_$(Get-Random)"
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    try {
+        $r = Invoke-Wrapper @("-Prompt", "hi", "-Cd", $tmpDir, "-WorkDir", $tmpDir)
+        if ($r.ExitCode -eq 0) { throw "expected non-zero exit, got 0" }
+        if ($r.Output -notmatch $Sentinel) {
+            throw "stdout did not contain sentinel. Output: $($r.Output)"
+        }
+    } finally { Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Test-Case "Sentinel: success path does NOT contain sentinel" {
+    # Use the recording shim so we don't need a real codex (and we don't want
+    # to wait for a real network round-trip in a unit test).
+    $shim = New-RecordingShim
+    try {
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi")
+        if ($r.ExitCode -ne 0) { throw "expected exit 0, got $($r.ExitCode)" }
+        if ($r.Output -match $Sentinel) {
+            throw "stdout unexpectedly contained sentinel on success path. Output: $($r.Output)"
+        }
+    } finally { Remove-RecordingShim $shim }
+}
+
+# --------------------------------------------------
+Write-Host ""
 Write-Host "[Group 5: Context File Support]" -ForegroundColor Yellow
 
 Test-Case "Accepts -ContextFile parameter" {

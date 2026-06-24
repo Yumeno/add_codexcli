@@ -27,7 +27,9 @@ param(
     [string]$Cd = "",
     [string]$Context = "",
     [string]$ContextFile = "",
-    [ValidateSet("read-only", "workspace-write", "danger-full-access")]
+    # NOTE: deliberately no [ValidateSet] here. PS's own ValidateSet rejection
+    # happens before the script body runs, so we cannot route it through Fail
+    # and the sentinel is never emitted. We validate manually below instead.
     [string]$SandboxMode = "read-only",
     [string]$SetModel = "",
     [switch]$ShowModel
@@ -41,14 +43,28 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+# Sentinel printed to stdout on every failure path so callers that cannot
+# separate stdout/stderr (the documented "bare single command" SKILL.md
+# invocation under Claude Code's permit umbrella) can still detect failure
+# from the stdout stream alone. See issue #19 review feedback / issue #20.
+$ErrorSentinel = "[CODEX_WRAPPER_ERROR]"
+
+# Fail <code> <message>
+# Emits "<sentinel> <message>" to stdout, the same message to stderr, exits.
+function Fail {
+    param([int]$Code, [string]$Message)
+    Write-Output ("{0} {1}" -f $ErrorSentinel, $Message)
+    [Console]::Error.WriteLine("Error: $Message")
+    exit $Code
+}
+
 # -Cd / -WorkDir reconciliation. Both name the same concept; -Cd matches the
 # Codex CLI's own --cd / -C flag. We reject the both-specified case rather
 # than silently picking one — silent precedence is the kind of thing that
 # bites callers months later, when the value they thought they had is being
 # ignored.
 if ((-not [string]::IsNullOrWhiteSpace($Cd)) -and (-not [string]::IsNullOrWhiteSpace($WorkDir))) {
-    [Console]::Error.WriteLine("Error: -Cd and -WorkDir are aliases; pass only one.")
-    exit 1
+    Fail 1 "-Cd and -WorkDir are aliases; pass only one."
 }
 if (-not [string]::IsNullOrWhiteSpace($Cd)) {
     $WorkDir = $Cd
@@ -70,9 +86,7 @@ $ModelNameRegex = '^[A-Za-z0-9._:/-]+$'
 function Test-ModelName {
     param([string]$Value, [string]$Source)
     if ($Value -notmatch $ModelNameRegex) {
-        [Console]::Error.WriteLine("Error: model name from $Source contains unsafe characters: '$Value'")
-        [Console]::Error.WriteLine("       Allowed: A-Z a-z 0-9 . _ : / -")
-        exit 1
+        Fail 1 ("model name from {0} contains unsafe characters: '{1}' (allowed: A-Z a-z 0-9 . _ : / -)" -f $Source, $Value)
     }
 }
 
@@ -156,15 +170,20 @@ if ($ShowModel) {
 
 # --- Input validation ---
 if ([string]::IsNullOrWhiteSpace($Prompt)) {
-    [Console]::Error.WriteLine("Error: -Prompt is required.")
-    exit 1
+    Fail 1 "-Prompt is required."
+}
+
+# Manual whitelist for -SandboxMode (see param block comment). Anything outside
+# the documented set fails fast through Fail so the sentinel is emitted.
+$AllowedSandboxModes = @("read-only", "workspace-write", "danger-full-access")
+if ($AllowedSandboxModes -notcontains $SandboxMode) {
+    Fail 1 ("-SandboxMode must be one of: read-only | workspace-write | danger-full-access (got: '{0}')." -f $SandboxMode)
 }
 
 # --- Load context from file if specified ---
 if (-not [string]::IsNullOrWhiteSpace($ContextFile)) {
     if (-not (Test-Path $ContextFile)) {
-        [Console]::Error.WriteLine("Error: Context file not found: $ContextFile")
-        exit 1
+        Fail 1 "Context file not found: $ContextFile"
     }
     $Context = Get-Content $ContextFile -Raw -Encoding UTF8
 }
@@ -195,14 +214,12 @@ function Test-IsAscii {
 function Resolve-AsciiWorkDir {
     if (-not [string]::IsNullOrWhiteSpace($script:WorkDir)) {
         if (-not (Test-IsAscii $script:WorkDir)) {
-            [Console]::Error.WriteLine("Error: -Cd / -WorkDir must be ASCII-only due to Codex CLI WebSocket limitations: $($script:WorkDir)")
-            exit 1
+            Fail 1 "-Cd / -WorkDir must be ASCII-only due to Codex CLI WebSocket limitations: $($script:WorkDir)"
         }
         $candidate = $script:WorkDir
     } elseif (-not [string]::IsNullOrWhiteSpace($env:CODEX_WRAPPER_TEMP)) {
         if (-not (Test-IsAscii $env:CODEX_WRAPPER_TEMP)) {
-            [Console]::Error.WriteLine("Error: `$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)")
-            exit 1
+            Fail 1 "`$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)"
         }
         $candidate = $env:CODEX_WRAPPER_TEMP
     } elseif ((-not [string]::IsNullOrWhiteSpace($env:TEMP)) -and (Test-IsAscii $env:TEMP)) {
@@ -213,14 +230,11 @@ function Resolve-AsciiWorkDir {
         try {
             New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
         } catch {
-            [Console]::Error.WriteLine("Error: `$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$candidate' is not creatable: $_")
-            [Console]::Error.WriteLine("       Set `$env:CODEX_WRAPPER_TEMP or -WorkDir to an ASCII directory.")
-            exit 1
+            Fail 1 "`$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$candidate' is not creatable: $_. Set `$env:CODEX_WRAPPER_TEMP or -WorkDir to an ASCII directory."
         }
     }
     if (-not (Test-Path $candidate -PathType Container)) {
-        [Console]::Error.WriteLine("Error: workdir does not exist: $candidate")
-        exit 1
+        Fail 1 "workdir does not exist: $candidate"
     }
     return $candidate
 }
@@ -359,9 +373,8 @@ try {
 
     if (-not $exited) {
         try { $process.Kill() } catch {}
-        [Console]::Error.WriteLine("Error: Codex CLI timed out after ${Timeout}s")
         Cleanup
-        exit 2
+        Fail 2 "Codex CLI timed out after ${Timeout}s"
     }
 
     $codexExit = $process.ExitCode
@@ -379,7 +392,12 @@ try {
         if ($output.Length -gt 0) {
             Write-Output $output
         } else {
-            [Console]::Error.WriteLine("Codex CLI returned empty output.")
+            # Codex ran but produced no usable content. We emit the sentinel
+            # + short reason on stdout (so skills detecting failure via the
+            # combined stream still see it), and also dump codex's own stderr
+            # to wrapper's stderr for human debugging.
+            Write-Output ("{0} Codex CLI returned empty output (exit={1})." -f $ErrorSentinel, $codexExit)
+            [Console]::Error.WriteLine("Error: Codex CLI returned empty output.")
             if ((Test-Path $errFile) -and (Get-Item $errFile).Length -gt 0) {
                 [Console]::Error.WriteLine("Stderr:")
                 [Console]::Error.WriteLine((Get-Content $errFile -Raw -Encoding UTF8))
@@ -388,7 +406,8 @@ try {
             exit 1
         }
     } else {
-        [Console]::Error.WriteLine("Codex CLI produced no output file. Exit code: $codexExit")
+        Write-Output ("{0} Codex CLI produced no output file (exit={1})." -f $ErrorSentinel, $codexExit)
+        [Console]::Error.WriteLine("Error: Codex CLI produced no output file. Exit code: $codexExit")
         if ((Test-Path $errFile) -and (Get-Item $errFile).Length -gt 0) {
             [Console]::Error.WriteLine("Stderr:")
             [Console]::Error.WriteLine((Get-Content $errFile -Raw -Encoding UTF8))
@@ -397,9 +416,8 @@ try {
         exit 1
     }
 } catch {
-    [Console]::Error.WriteLine("Error: $_")
     Cleanup
-    exit 1
+    Fail 1 ("{0}" -f $_)
 }
 
 Cleanup
@@ -408,7 +426,13 @@ Cleanup
 # Matches the bash wrapper's contract; the legacy "always exit 0" behaviour
 # was a workaround for cmd.exe ERRORLEVEL noise that no longer applies now
 # that we invoke codex via Process.Start instead of through cmd.exe.
+#
+# Sentinel: codex produced *some* output (it was printed above), but the run
+# itself failed; without the sentinel the skill would see only the partial
+# content and read it as a normal answer.
 if ($codexExit -ne 0) {
+    Write-Output ("{0} Codex CLI exited with non-zero status: {1}" -f $ErrorSentinel, $codexExit)
+    [Console]::Error.WriteLine("Error: Codex CLI exited with non-zero status: $codexExit")
     exit $codexExit
 }
 exit 0

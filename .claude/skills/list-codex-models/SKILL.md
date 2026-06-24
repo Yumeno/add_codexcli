@@ -57,7 +57,21 @@ bash "$HOME/.claude/scripts/list-codex-models.sh"
 
 オプション: `--bundled` / `--json`。
 
-### 2. 結果を以下の形式でユーザーに提示する
+### 2. 失敗検知 (重要)
+
+helper が失敗したとき、**stdout の先頭に `[CODEX_WRAPPER_ERROR]` で始まる行が出る**。
+tool result の中に `[CODEX_WRAPPER_ERROR]` が含まれていたら、**モデル一覧ではなく
+helper のエラーとして提示する**。例:
+
+```
+## list-codex-models の呼び出しに失敗しました
+
+(sentinel 行とそれ以降のエラー詳細をそのまま掲示)
+```
+
+成功時は sentinel が出ないので、以下の通常フォーマットを使う。
+
+### 3. 結果を以下の形式でユーザーに提示する
 
 **名前リストの場合**:
 ```
@@ -78,4 +92,4 @@ bash "$HOME/.claude/scripts/list-codex-models.sh"
 ```
 ````
 
-### 3. 必要に応じて、`/ask-codex -Model <name>` のような使い方の例を添える
+### 4. 必要に応じて、`/ask-codex -Model <name>` のような使い方の例を添える

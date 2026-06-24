@@ -14,6 +14,19 @@
 
 set -euo pipefail
 
+# Sentinel printed to stdout on every failure path so callers that cannot
+# separate stdout/stderr can still detect failure from the stdout stream
+# alone. Mirrors codex-wrapper.sh.
+ERROR_SENTINEL="[CODEX_WRAPPER_ERROR]"
+
+die() {
+    local code="$1"; shift
+    local msg="$*"
+    printf '%s %s\n' "$ERROR_SENTINEL" "$msg"
+    printf 'Error: %s\n' "$msg" >&2
+    exit "$code"
+}
+
 BUNDLED=""
 JSON_OUT=""
 
@@ -24,13 +37,12 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
-        *) echo "Error: Unknown option: $1" >&2; exit 1 ;;
+        *) die 1 "Unknown option: $1" ;;
     esac
 done
 
 if ! command -v codex &>/dev/null; then
-    echo "Error: codex CLI not found in PATH" >&2
-    exit 1
+    die 1 "codex CLI not found in PATH"
 fi
 
 # Resolve an ASCII-only working directory the same way codex-wrapper.sh does.
@@ -43,8 +55,7 @@ resolve_ascii_workdir() {
     local cand=""
     if [[ -n "${CODEX_WRAPPER_TEMP:-}" ]]; then
         if ! is_ascii "$CODEX_WRAPPER_TEMP"; then
-            echo "Error: \$CODEX_WRAPPER_TEMP must be ASCII-only: $CODEX_WRAPPER_TEMP" >&2
-            exit 1
+            die 1 "\$CODEX_WRAPPER_TEMP must be ASCII-only: $CODEX_WRAPPER_TEMP"
         fi
         cand="$CODEX_WRAPPER_TEMP"
     else
@@ -54,13 +65,11 @@ resolve_ascii_workdir() {
         else
             cand="/tmp/codex-wrapper-$$"
             if ! mkdir -p "$cand" 2>/dev/null; then
-                echo "Error: \$TMPDIR is non-ASCII ('$tmp') and fallback '$cand' is not creatable." >&2
-                echo "       Set \$CODEX_WRAPPER_TEMP to an ASCII directory." >&2
-                exit 1
+                die 1 "\$TMPDIR is non-ASCII ('$tmp') and fallback '$cand' is not creatable. Set \$CODEX_WRAPPER_TEMP to an ASCII directory."
             fi
         fi
     fi
-    [[ -d "$cand" ]] || { echo "Error: workdir does not exist: $cand" >&2; exit 1; }
+    [[ -d "$cand" ]] || die 1 "workdir does not exist: $cand"
     printf '%s' "$cand"
 }
 WORKDIR=$(resolve_ascii_workdir)
