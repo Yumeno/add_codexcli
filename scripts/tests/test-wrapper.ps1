@@ -395,6 +395,240 @@ Test-Case "Wrapper pins console output encoding to UTF-8" {
 
 # --------------------------------------------------
 Write-Host ""
+Write-Host "[Group 4f: Recording shim — sandbox/cd/argv quoting (issues #11, #18)]" -ForegroundColor Yellow
+
+# Build a fake codex.cmd whose only job is to dump argv + stdin to inspection
+# files and write a non-empty marker into the -o file (so the wrapper does not
+# treat the run as empty-output failure). We point Codex resolution at this
+# shim by prepending its directory to PATH for the child PowerShell.
+function New-RecordingShim {
+    $dir = Join-Path $env:TEMP "codex_rec_ps_$(Get-Random)"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $argvPath = Join-Path $dir "argv.txt"
+    $stdinPath = Join-Path $dir "stdin.bin"
+    $ps1Path = Join-Path $dir "codex-shim.ps1"
+    $cmdPath = Join-Path $dir "codex.cmd"
+    # Use a PS shim for the actual recording (real arg parsing, real stdin
+    # read) and a thin .cmd that forwards to it. The wrapper resolves
+    # `Get-Command codex` → its .cmd preferentially, so the .cmd is what it
+    # spawns; the .cmd then invokes the PS shim with `%*` for argv-pass
+    # through and pipes stdin through.
+    $shimBody = @"
+# NOTE: deliberately no param() block. PS would otherwise see -o / -s on the
+# command line and complain about ambiguous bindings to -OutVariable / etc.
+# `\`$args` is the raw verbatim argv as PS received it.
+`$argvPath  = '$argvPath'
+`$stdinPath = '$stdinPath'
+`$args | Out-File -FilePath `$argvPath -Encoding UTF8
+`$inStream = [Console]::OpenStandardInput()
+`$ms = New-Object System.IO.MemoryStream
+`$buf = New-Object byte[] 4096
+while (`$true) {
+    `$n = `$inStream.Read(`$buf, 0, `$buf.Length)
+    if (`$n -le 0) { break }
+    `$ms.Write(`$buf, 0, `$n)
+}
+[System.IO.File]::WriteAllBytes(`$stdinPath, `$ms.ToArray())
+# Extract -o <file> from argv and write a marker so the wrapper doesn't treat
+# the run as empty-output failure.
+`$outFile = `$null
+for (`$i = 0; `$i -lt `$args.Count; `$i++) {
+    if (`$args[`$i] -eq '-o' -and `$i + 1 -lt `$args.Count) { `$outFile = `$args[`$i + 1]; break }
+}
+if (`$outFile) { Set-Content -Path `$outFile -Value 'rec codex output' -Encoding UTF8 }
+exit 0
+"@
+    Set-Content -Path $ps1Path -Value $shimBody -Encoding UTF8
+    # The .cmd shim invokes the PS recorder by passing `& 'shim.ps1' $args`
+    # via -Command, then using `-- %*` to deliver cmd's raw argv. This keeps
+    # PS's parameter-binding off our argv (so -o / -s do not bind to
+    # -OutVariable / etc) while preserving the original argument boundaries.
+    $batch = "@echo off`r`npowershell -ExecutionPolicy Bypass -NoProfile -Command `"& '$ps1Path' `$args`" -- %*`r`n"
+    [System.IO.File]::WriteAllText($cmdPath, $batch)
+    return @{ Dir = $dir; ArgvPath = $argvPath; StdinPath = $stdinPath }
+}
+
+function Remove-RecordingShim {
+    param($Shim)
+    if ($Shim -and (Test-Path $Shim.Dir)) {
+        Remove-Item $Shim.Dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-WrapperWithShim {
+    param([hashtable]$Shim, [string[]]$Arguments = @())
+    # Stack the shim dir at the front of PATH for the child PS process only.
+    $oldPath = $env:Path
+    try {
+        $env:Path = "$($Shim.Dir);$env:Path"
+        $output = & powershell -ExecutionPolicy Bypass -NoProfile -File $Wrapper @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $env:Path = $oldPath
+    }
+    return @{ ExitCode = $code; Output = ($output | Out-String).Trim() }
+}
+
+Test-Case "Context arrives on stdin, not in argv" {
+    $shim = New-RecordingShim
+    try {
+        $payload = "UNIQUE_PS_CTX_$(Get-Random)"
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi", "-Context", $payload)
+        if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+        $argv = Get-Content $shim.ArgvPath -Raw -Encoding UTF8
+        $stdin = Get-Content $shim.StdinPath -Raw -Encoding UTF8
+        if ($argv -match [regex]::Escape($payload)) {
+            throw "Context leaked into argv: $argv"
+        }
+        if ($stdin -notmatch [regex]::Escape($payload)) {
+            throw "Context did not arrive on stdin. argv='$argv' stdin='$stdin'"
+        }
+    } finally { Remove-RecordingShim $shim }
+}
+
+Test-Case "No context => stdin is empty" {
+    $shim = New-RecordingShim
+    try {
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi")
+        if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+        $stdinBytes = (Get-Item $shim.StdinPath).Length
+        if ($stdinBytes -ne 0) {
+            throw "Expected empty stdin, got $stdinBytes bytes"
+        }
+    } finally { Remove-RecordingShim $shim }
+}
+
+Test-Case "-SandboxMode read-only is the default on argv" {
+    $shim = New-RecordingShim
+    try {
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi")
+        if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+        $argv = Get-Content $shim.ArgvPath -Raw -Encoding UTF8
+        if ($argv -notmatch '-s') { throw "argv missing -s flag: $argv" }
+        if ($argv -notmatch 'read-only') { throw "argv missing read-only: $argv" }
+    } finally { Remove-RecordingShim $shim }
+}
+
+Test-Case "-SandboxMode workspace-write is passed through" {
+    $shim = New-RecordingShim
+    try {
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi", "-SandboxMode", "workspace-write")
+        if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+        $argv = Get-Content $shim.ArgvPath -Raw -Encoding UTF8
+        if ($argv -notmatch 'workspace-write') { throw "argv missing workspace-write: $argv" }
+    } finally { Remove-RecordingShim $shim }
+}
+
+Test-Case "-SandboxMode rejects bogus value" {
+    $r = Invoke-Wrapper @("-Prompt", "hi", "-SandboxMode", "bogus-mode")
+    if ($r.ExitCode -eq 0) {
+        throw "Expected non-zero exit on bogus -SandboxMode, got 0 with output: $($r.Output)"
+    }
+}
+
+Test-Case "-Cd is accepted as an alias for -WorkDir" {
+    $shim = New-RecordingShim
+    try {
+        $aliasDir = Join-Path $env:TEMP "cd_alias_$(Get-Random)"
+        New-Item -ItemType Directory -Path $aliasDir -Force | Out-Null
+        try {
+            $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi", "-Cd", $aliasDir)
+            if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+            $argv = Get-Content $shim.ArgvPath -Raw -Encoding UTF8
+            if ($argv -notmatch [regex]::Escape($aliasDir)) {
+                throw "argv missing -Cd directory '$aliasDir': $argv"
+            }
+        } finally { Remove-Item $aliasDir -Recurse -Force -ErrorAction SilentlyContinue }
+    } finally { Remove-RecordingShim $shim }
+}
+
+Test-Case "-Cd and -WorkDir together is an error (no silent precedence)" {
+    $tmpDir = Join-Path $env:TEMP "cd_dup_$(Get-Random)"
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    try {
+        $r = Invoke-Wrapper @("-Prompt", "hi", "-Cd", $tmpDir, "-WorkDir", $tmpDir)
+        if ($r.ExitCode -eq 0) {
+            throw "Expected non-zero exit when both -Cd and -WorkDir given, got 0: $($r.Output)"
+        }
+        if ($r.Output -notmatch 'Cd' -or $r.Output -notmatch 'WorkDir') {
+            throw "Expected error message mentioning Cd and WorkDir, got: $($r.Output)"
+        }
+    } finally { Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Test-Case "argv quoting survives trailing backslash on -Cd (issue #11)" {
+    # The case that broke the old simple-quote implementation: a path ending in
+    # one or more backslashes inside a quoted token gets eaten by the
+    # de-quoter, splitting argv. We can't easily test "did codex receive the
+    # right path" without a real shim that prints %~1-style decomposition, but
+    # we *can* test that the wrapper itself does not crash on this input and
+    # that the trailing-backslash directory appears in the recorded argv.
+    $shim = New-RecordingShim
+    try {
+        $trailDir = Join-Path $env:TEMP "trail_bs_$(Get-Random)"
+        New-Item -ItemType Directory -Path $trailDir -Force | Out-Null
+        # Append a trailing backslash to the path we pass to -Cd.
+        $trailDirWithSlash = "$trailDir\"
+        try {
+            $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "hi", "-Cd", $trailDirWithSlash)
+            if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+            $argv = Get-Content $shim.ArgvPath -Raw -Encoding UTF8
+            if ($argv -notmatch [regex]::Escape($trailDir)) {
+                throw "argv missing trailing-backslash dir '$trailDir': $argv"
+            }
+        } finally { Remove-Item $trailDir -Recurse -Force -ErrorAction SilentlyContinue }
+    } finally { Remove-RecordingShim $shim }
+}
+
+Test-Case "Convert-ArgumentToCommandLine handles CommandLineToArgvW edge cases" {
+    # Unit-test the quoting function. Extract the function definition from the
+    # wrapper source by reading lines from `function Convert-ArgumentToCommandLine`
+    # to its closing `}`, then evaluate that body inside this PS session so the
+    # function is in scope locally without spawning a child or modifying the
+    # wrapper file.
+    $body = Get-Content $Wrapper -Encoding UTF8
+    $startIdx = -1; $endIdx = -1; $depth = 0
+    for ($i = 0; $i -lt $body.Count; $i++) {
+        if ($startIdx -lt 0 -and $body[$i] -match '^function\s+Convert-ArgumentToCommandLine\b') {
+            $startIdx = $i
+            $depth = 0
+        }
+        if ($startIdx -ge 0) {
+            $depth += ([regex]::Matches($body[$i], '\{')).Count
+            $depth -= ([regex]::Matches($body[$i], '\}')).Count
+            if ($depth -eq 0 -and $i -ge $startIdx -and $body[$i] -match '\}') {
+                $endIdx = $i; break
+            }
+        }
+    }
+    if ($startIdx -lt 0 -or $endIdx -lt 0) {
+        throw "Could not locate Convert-ArgumentToCommandLine in wrapper"
+    }
+    $defText = ($body[$startIdx..$endIdx] -join "`n")
+    Invoke-Expression $defText
+
+    $cases = @(
+        @{ In = 'plain';                  Expected = 'plain' }
+        @{ In = 'with space';             Expected = '"with space"' }
+        @{ In = 'has"quote';              Expected = '"has\"quote"' }
+        @{ In = 'ends\';                  Expected = 'ends\' }
+        @{ In = 'C:\path with space\';    Expected = '"C:\path with space\\"' }
+        @{ In = 'a\\"b';                  Expected = '"a\\\\\"b"' }
+    )
+    $fails = @()
+    foreach ($c in $cases) {
+        $got = Convert-ArgumentToCommandLine -Argument $c.In
+        if ($got -ne $c.Expected) {
+            $fails += "in='$($c.In)' expected='$($c.Expected)' got='$got'"
+        }
+    }
+    if ($fails.Count -gt 0) {
+        throw "Quoting cases failed:`n  " + ($fails -join "`n  ")
+    }
+}
+
+# --------------------------------------------------
+Write-Host ""
 Write-Host "[Group 5: Context File Support]" -ForegroundColor Yellow
 
 Test-Case "Accepts -ContextFile parameter" {
