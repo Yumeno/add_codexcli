@@ -20,6 +20,23 @@
 
 set -euo pipefail
 
+# Sentinel printed to stdout on every failure path so callers that cannot
+# separate stdout/stderr (the documented "bare single command" SKILL.md
+# invocation under Claude Code's permit umbrella) can still detect failure
+# from the stdout stream alone. See issue #19 review feedback / issue #20.
+ERROR_SENTINEL="[CODEX_WRAPPER_ERROR]"
+
+# die <exit_code> <human-readable-error-message>
+# Emits "<SENTINEL> <message>" to stdout, the same message to stderr (for
+# anyone who *does* separate streams or reads logs directly), then exits.
+die() {
+    local code="$1"; shift
+    local msg="$*"
+    printf '%s %s\n' "$ERROR_SENTINEL" "$msg"
+    printf 'Error: %s\n' "$msg" >&2
+    exit "$code"
+}
+
 PROMPT=""
 MODEL=""
 TIMEOUT=120
@@ -59,9 +76,7 @@ validate_model() {
     # $1: value, $2: source label (for the error message)
     local value="$1" source="$2"
     if [[ ! "$value" =~ $MODEL_NAME_RE ]]; then
-        echo "Error: model name from $source contains unsafe characters: '$value'" >&2
-        echo "       Allowed: A-Z a-z 0-9 . _ : / -" >&2
-        exit 1
+        die 1 "model name from $source contains unsafe characters: '$value' (allowed: A-Z a-z 0-9 . _ : / -)"
     fi
 }
 
@@ -77,8 +92,7 @@ validate_model() {
 require_value() {
     local opt="$1" remaining="$2"
     if [[ "$remaining" -lt 1 ]]; then
-        echo "Error: $opt requires a value." >&2
-        exit 1
+        die 1 "$opt requires a value."
     fi
 }
 
@@ -94,7 +108,7 @@ while [[ $# -gt 0 ]]; do
         --sandbox)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; SANDBOX="$2"; shift 2 ;;
         --set-model)    require_value "$1" "$(( $# - 1 ))" "${2:-}"; SET_MODEL="$2"; shift 2 ;;
         --show-model)   SHOW_MODEL=1; shift ;;
-        *) echo "Error: Unknown option: $1" >&2; exit 1 ;;
+        *) die 1 "Unknown option: $1" ;;
     esac
 done
 
@@ -180,28 +194,24 @@ fi
 
 # --- Input validation ---
 if [[ -z "$PROMPT" ]]; then
-    echo "Error: --prompt is required." >&2
-    exit 1
+    die 1 "--prompt is required."
 fi
 
 if [[ ! "$TIMEOUT" =~ ^[0-9]+$ || "$TIMEOUT" -le 0 ]]; then
-    echo "Error: --timeout must be a positive integer (got: '$TIMEOUT')." >&2
-    exit 1
+    die 1 "--timeout must be a positive integer (got: '$TIMEOUT')."
 fi
 
 # --- Sandbox validation ---
 # Done after parse so a typo in --sandbox surfaces before we resolve the model
 # or touch the filesystem.
 if [[ ! "$SANDBOX" =~ $SANDBOX_MODES_RE ]]; then
-    echo "Error: --sandbox must be one of: read-only | workspace-write | danger-full-access (got: '$SANDBOX')." >&2
-    exit 1
+    die 1 "--sandbox must be one of: read-only | workspace-write | danger-full-access (got: '$SANDBOX')."
 fi
 
 # --- Load context from file if specified ---
 if [[ -n "$CONTEXT_FILE" ]]; then
     if [[ ! -f "$CONTEXT_FILE" ]]; then
-        echo "Error: Context file not found: $CONTEXT_FILE" >&2
-        exit 1
+        die 1 "Context file not found: $CONTEXT_FILE"
     fi
     # Preserve "context was requested" even if the file is empty: an empty
     # context-file means the caller wanted *no extra context*, not "fall back
@@ -235,14 +245,12 @@ resolve_workdir() {
     local candidate=""
     if [[ -n "$WORKDIR" ]]; then
         if ! is_ascii "$WORKDIR"; then
-            echo "Error: --workdir must be ASCII-only due to Codex CLI WebSocket limitations: $WORKDIR" >&2
-            exit 1
+            die 1 "--workdir must be ASCII-only due to Codex CLI WebSocket limitations: $WORKDIR"
         fi
         candidate="$WORKDIR"
     elif [[ -n "${CODEX_WRAPPER_TEMP:-}" ]]; then
         if ! is_ascii "$CODEX_WRAPPER_TEMP"; then
-            echo "Error: \$CODEX_WRAPPER_TEMP must be ASCII-only: $CODEX_WRAPPER_TEMP" >&2
-            exit 1
+            die 1 "\$CODEX_WRAPPER_TEMP must be ASCII-only: $CODEX_WRAPPER_TEMP"
         fi
         candidate="$CODEX_WRAPPER_TEMP"
     else
@@ -253,15 +261,12 @@ resolve_workdir() {
             # Build a per-process ASCII fallback under /tmp.
             candidate="/tmp/codex-wrapper-$$"
             if ! mkdir -p "$candidate" 2>/dev/null; then
-                echo "Error: \$TMPDIR is non-ASCII ('$tmp') and fallback '$candidate' is not creatable." >&2
-                echo "       Set \$CODEX_WRAPPER_TEMP or --workdir to an ASCII directory." >&2
-                exit 1
+                die 1 "\$TMPDIR is non-ASCII ('$tmp') and fallback '$candidate' is not creatable. Set \$CODEX_WRAPPER_TEMP or --workdir to an ASCII directory."
             fi
         fi
     fi
     if [[ ! -d "$candidate" ]]; then
-        echo "Error: workdir does not exist: $candidate" >&2
-        exit 1
+        die 1 "workdir does not exist: $candidate"
     fi
     WORKDIR="$candidate"
 }
@@ -319,14 +324,12 @@ run_codex() {
 if command -v timeout &>/dev/null; then
     run_codex timeout "${TIMEOUT}s" || CODEX_EXIT=$?
     if [[ $CODEX_EXIT -eq 124 ]]; then
-        echo "Error: Codex CLI timed out after ${TIMEOUT}s" >&2
-        exit 2
+        die 2 "Codex CLI timed out after ${TIMEOUT}s"
     fi
 elif command -v gtimeout &>/dev/null; then
     run_codex gtimeout "${TIMEOUT}s" || CODEX_EXIT=$?
     if [[ $CODEX_EXIT -eq 124 ]]; then
-        echo "Error: Codex CLI timed out after ${TIMEOUT}s" >&2
-        exit 2
+        die 2 "Codex CLI timed out after ${TIMEOUT}s"
     fi
 else
     # Fallback: no timeout command available (timeout disabled)
@@ -340,7 +343,12 @@ if [[ -f "$OUT_FILE" ]]; then
     if [[ -n "$OUTPUT" ]]; then
         echo "$OUTPUT"
     else
-        echo "Codex CLI returned empty output." >&2
+        # Codex ran but produced no usable content. We emit the sentinel + a
+        # short reason on stdout (so skills detecting failure from the
+        # combined stream still see it), and also dump codex's own stderr to
+        # the wrapper's stderr for human debugging.
+        printf '%s %s\n' "$ERROR_SENTINEL" "Codex CLI returned empty output (exit=$CODEX_EXIT)."
+        echo "Error: Codex CLI returned empty output." >&2
         if [[ -s "$ERR_FILE" ]]; then
             echo "Stderr:" >&2
             cat "$ERR_FILE" >&2
@@ -348,7 +356,8 @@ if [[ -f "$OUT_FILE" ]]; then
         exit 1
     fi
 else
-    echo "Codex CLI produced no output file. Exit code: $CODEX_EXIT" >&2
+    printf '%s %s\n' "$ERROR_SENTINEL" "Codex CLI produced no output file (exit=$CODEX_EXIT)."
+    echo "Error: Codex CLI produced no output file. Exit code: $CODEX_EXIT" >&2
     if [[ -s "$ERR_FILE" ]]; then
         echo "Stderr:" >&2
         cat "$ERR_FILE" >&2
@@ -356,8 +365,13 @@ else
     exit 1
 fi
 
-# Propagate non-zero exit from codex (even if output was produced)
+# Propagate non-zero exit from codex (even if output was produced). The
+# sentinel is added here too: codex produced *some* output (so we printed it
+# above), but the run itself failed; without the sentinel the skill would see
+# only the partial content and read it as a normal answer.
 if [[ $CODEX_EXIT -ne 0 ]]; then
+    printf '%s %s\n' "$ERROR_SENTINEL" "Codex CLI exited with non-zero status: $CODEX_EXIT"
+    echo "Error: Codex CLI exited with non-zero status: $CODEX_EXIT" >&2
     exit $CODEX_EXIT
 fi
 

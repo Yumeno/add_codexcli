@@ -8,6 +8,7 @@ allowed-tools: Bash Read
 # /ask-codex — Codex CLI にセカンドオピニオンを求める
 
 ユーザーの質問をそのまま Codex CLI に投げて、回答を取得して表示します。
+コンテキスト (ファイル / diff) を添えたい場合は `/ask-codex-with-context` を使ってください。
 
 > **`disable-model-invocation` について:** デフォルトは `true`（手動起動のみ）です。
 > `false` に変更すると「Codex にも聞いて」等の自然言語で Claude が自動的にこのスキルを呼べるようになります。
@@ -15,47 +16,68 @@ allowed-tools: Bash Read
 
 ## 手順
 
-1. `$ARGUMENTS` をプロンプトとして使う。空の場合はユーザーに質問内容を聞く。
+### 1. `$ARGUMENTS` をプロンプトとして使う
 
-2. ラッパースクリプトのパスを特定する:
+空の場合はユーザーに質問内容を聞く。
+
+### 2. ラッパースクリプトを呼び出す
+
+> **重要 (許可プロンプト回避):** Claude Code の許可傘は
+> ``Bash(powershell -ExecutionPolicy Bypass -NoProfile -File *codex-wrapper.ps1*)``。
+> これは **コマンドが `powershell` で始まるときだけ** マッチする。
+> 以下のシェル構文で包んだ瞬間に傘から外れて毎回承認要求が出る:
+> - 変数代入の前置: `ERRFILE=... powershell ...`
+> - コマンド置換: `RESPONSE=$(powershell ...)`
+> - stderr リダイレクト: `powershell ... 2>file`
+> - パイプ: `powershell ... | tee log`
+>
+> **素の 1 コマンドで直接呼ぶこと。** stdout はそのまま tool result に返るので捕捉不要。
+> wrapper パスは **必ず double quote で囲む** (quote なしも傘から外れる)。
+
+#### Windows + Claude Code (主用途)
+
+グローバルインストール想定 (`~/.claude/scripts/codex-wrapper.ps1`):
+
 ```bash
-WRAPPER_DIR="${CLAUDE_SKILL_DIR}/../../../scripts"
+powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-wrapper.ps1" -Prompt "質問文"
 ```
 
-3. OS を判定して適切なラッパーを呼び出す。stderr を別ファイルに分離して取得し、後でモデル名抽出に使う:
+プロンプトに長い文を渡す場合も、ラッパーが stdin 経由で codex に渡すためコマンドライン長制限は気にしなくてよい。
+プロンプトがダッシュで始まっても `--` セパレータで安全に扱われる。
 
-> **注意:** ラッパーはプロンプトを stdin 経由で codex に渡すため、コマンドライン長の制限を受けません。
-> また `--` セパレータにより、プロンプトがダッシュで始まっても安全です。
+#### Linux/Mac native 環境
 
 ```bash
-ERRFILE=$(mktemp "${TMPDIR:-/tmp}/codex_skill_err_XXXXXX.txt")
-if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-    RESPONSE=$(powershell -ExecutionPolicy Bypass -NoProfile -File "$WRAPPER_DIR/codex-wrapper.ps1" -Prompt "$ARGUMENTS" 2>"$ERRFILE")
-else
-    RESPONSE=$(bash "$WRAPPER_DIR/codex-wrapper.sh" --prompt "$ARGUMENTS" 2>"$ERRFILE")
-fi
-# Pull the model name only if the wrapper announced one (i.e. --model was passed).
-# When no model was supplied, the wrapper stays silent because we cannot know
-# which model codex actually picked (its default changes between versions).
-MODEL_USED=$(grep -E '^MODEL: ' "$ERRFILE" | head -1 | sed 's/^MODEL: //')
-rm -f "$ERRFILE"
+bash "$HOME/.claude/scripts/codex-wrapper.sh" --prompt "質問文"
 ```
 
-4. Codex の回答を表示する。フッターのモデル表記は **`MODEL_USED` が取れたときだけ** 出す。取れなかったとき（通常運用）は嘘になるので絶対にモデル名を固定で書かない:
+### 3. Codex の回答を表示する
 
-`MODEL_USED` が空でないとき:
+#### 失敗検知 (重要)
+
+wrapper が失敗したとき、**stdout の先頭に `[CODEX_WRAPPER_ERROR]` で始まる行が出る**。
+これは「素の 1 コマンド呼び」で stdout/stderr を分離しない運用でも、Claude が
+「これは Codex の回答ではなく wrapper の失敗だ」と確実に判別できるようにするための sentinel。
+
+tool result の中に `[CODEX_WRAPPER_ERROR]` が含まれていたら、**Codex の回答ではなく
+wrapper のエラーとして提示する**。例:
+
 ```
-## Codex CLI のセカンドオピニオン
+## Codex CLI 呼び出しに失敗しました
 
-> (ユーザーの質問)
-
-(Codex の回答)
-
----
-*Model: <MODEL_USED の値> via Codex CLI*
+(sentinel 行とそれ以降のエラー詳細をそのまま掲示)
 ```
 
-`MODEL_USED` が空のとき（`--model` 未指定なので実際のモデル不明）:
+成功時は sentinel が出ないので、以下の通常フォーマットを使う。
+
+#### 通常のフォーマット (成功時)
+
+stderr を分離しない運用ではモデル名は取得できないので、フッターは常に以下の「モデル未指定」形式を使う。
+**固定のモデル名を書くのは嘘になるため絶対にしない。**
+`-Model` を明示的に渡した場合のみ、その値を使ってよい。
+
+#### 通常運用（`-Model` 未指定）
+
 ```
 ## Codex CLI のセカンドオピニオン
 
@@ -67,4 +89,11 @@ rm -f "$ERRFILE"
 *via Codex CLI（モデル未指定 / codex のデフォルトに委任）*
 ```
 
-5. 必要に応じて、Claude 自身の見解と比較してコメントを添える。
+#### `-Model gpt-5.5` のように明示した場合
+
+```
+---
+*Model: gpt-5.5 via Codex CLI*
+```
+
+### 4. 必要に応じて、Claude 自身の見解と比較してコメントを添える

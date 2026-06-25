@@ -8,7 +8,7 @@ allowed-tools: Bash
 # /list-codex-models — 利用可能なモデルを列挙する
 
 `codex debug models` を呼び出して、Codex CLI が知っているモデル名を一覧表示します。
-`/ask-codex` や `/ask-codex-with-context` で `--model` に何を渡せるか確認するためのスキル。
+`/ask-codex` や `/ask-codex-with-context` で `-Model` (PS) / `--model` (bash) に何を渡せるか確認するためのスキル。
 
 > **`disable-model-invocation` について:** デフォルトは `true`（手動起動のみ）。
 > 自動呼び出しの必要性は低いので基本このままで OK。
@@ -17,45 +17,61 @@ allowed-tools: Bash
 
 `$ARGUMENTS` は省略可能。以下のキーワードを含むと挙動が変わる:
 
-- `bundled` / `オフライン` → `--bundled` を付ける（バイナリ同梱カタログのみ）
-- `json` / `生` → `--json` を付ける（raw JSON 出力）
+- `bundled` / `オフライン` → `-Bundled` / `--bundled` を付ける（バイナリ同梱カタログのみ）
+- `json` / `生` → `-Json` / `--json` を付ける（raw JSON 出力）
 - それ以外 → 名前リスト（デフォルト）
 
 ## 手順
 
-1. ヘルパースクリプトのパスを特定する:
+### 1. ヘルパースクリプトを呼び出す
 
+> **重要 (許可プロンプト回避):** wrapper / helper を呼ぶときは
+> **素の 1 コマンドで直接呼ぶこと。** 変数代入の前置やコマンド置換 (`OUTPUT=$(...)`) は
+> 許可傘から外れて承認要求が出る。stdout はそのまま tool result に返るので捕捉不要。
+> helper のパスは **必ず double quote で囲む**。
+
+#### Windows + Claude Code (主用途)
+
+オプションなし (名前リスト):
 ```bash
-HELPER_DIR="${CLAUDE_SKILL_DIR}/../../../scripts"
+powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-codex-models.ps1"
 ```
 
-2. OS を判定して適切なヘルパーを呼び出す。`$ARGUMENTS` の中身に応じてオプションを組み立てる:
-
+オフライン (`-Bundled`):
 ```bash
-EXTRA_ARGS=()
-if echo "$ARGUMENTS" | grep -qiE 'bundled|オフライン'; then
-    EXTRA_ARGS+=(--bundled)
-fi
-if echo "$ARGUMENTS" | grep -qiE 'json|生'; then
-    EXTRA_ARGS+=(--json)
-fi
-
-if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-    # PowerShell 側は -Bundled / -Json のスイッチに置換
-    PS_ARGS=()
-    for a in "${EXTRA_ARGS[@]}"; do
-        case "$a" in
-            --bundled) PS_ARGS+=(-Bundled) ;;
-            --json)    PS_ARGS+=(-Json) ;;
-        esac
-    done
-    OUTPUT=$(powershell -ExecutionPolicy Bypass -NoProfile -File "$HELPER_DIR/list-codex-models.ps1" "${PS_ARGS[@]}" 2>&1)
-else
-    OUTPUT=$(bash "$HELPER_DIR/list-codex-models.sh" "${EXTRA_ARGS[@]}" 2>&1)
-fi
+powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-codex-models.ps1" -Bundled
 ```
 
-3. 結果を以下の形式でユーザーに提示する:
+raw JSON (`-Json`):
+```bash
+powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-codex-models.ps1" -Json
+```
+
+`-Bundled` と `-Json` の併用も可。引数の組み合わせは `$ARGUMENTS` のキーワードに応じて選ぶ。
+
+#### Linux/Mac native 環境
+
+```bash
+bash "$HOME/.claude/scripts/list-codex-models.sh"
+```
+
+オプション: `--bundled` / `--json`。
+
+### 2. 失敗検知 (重要)
+
+helper が失敗したとき、**stdout の先頭に `[CODEX_WRAPPER_ERROR]` で始まる行が出る**。
+tool result の中に `[CODEX_WRAPPER_ERROR]` が含まれていたら、**モデル一覧ではなく
+helper のエラーとして提示する**。例:
+
+```
+## list-codex-models の呼び出しに失敗しました
+
+(sentinel 行とそれ以降のエラー詳細をそのまま掲示)
+```
+
+成功時は sentinel が出ないので、以下の通常フォーマットを使う。
+
+### 3. 結果を以下の形式でユーザーに提示する
 
 **名前リストの場合**:
 ```
@@ -76,4 +92,4 @@ fi
 ```
 ````
 
-4. 必要に応じて、`/ask-codex --model <name>` のような使い方の例を添える。
+### 4. 必要に応じて、`/ask-codex -Model <name>` のような使い方の例を添える

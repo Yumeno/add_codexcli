@@ -15,12 +15,23 @@ param(
     [switch]$Json
 )
 
+# Sentinel printed to stdout on every failure path so callers that cannot
+# separate stdout/stderr can still detect failure from the stdout stream
+# alone. Mirrors codex-wrapper.ps1.
+$ErrorSentinel = "[CODEX_WRAPPER_ERROR]"
+
+function Fail {
+    param([int]$Code, [string]$Message)
+    Write-Output ("{0} {1}" -f $ErrorSentinel, $Message)
+    [Console]::Error.WriteLine("Error: $Message")
+    exit $Code
+}
+
 # --- Locate codex executable ---
 try {
     $codexSource = (Get-Command codex -ErrorAction Stop).Source
 } catch {
-    [Console]::Error.WriteLine("Error: codex CLI not found in PATH")
-    exit 1
+    Fail 1 "codex CLI not found in PATH"
 }
 
 # npm installs codex.ps1 + codex.cmd; prefer .cmd for Process.Start
@@ -44,8 +55,7 @@ function Test-IsAscii { param([string]$Path) return ($Path -notmatch '[^\x20-\x7
 function Resolve-AsciiTempDir {
     if (-not [string]::IsNullOrWhiteSpace($env:CODEX_WRAPPER_TEMP)) {
         if (-not (Test-IsAscii $env:CODEX_WRAPPER_TEMP)) {
-            [Console]::Error.WriteLine("Error: `$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)")
-            exit 1
+            Fail 1 "`$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)"
         }
         return $env:CODEX_WRAPPER_TEMP
     }
@@ -56,9 +66,7 @@ function Resolve-AsciiTempDir {
     try {
         New-Item -ItemType Directory -Path $cand -Force -ErrorAction Stop | Out-Null
     } catch {
-        [Console]::Error.WriteLine("Error: `$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$cand' is not creatable: $_")
-        [Console]::Error.WriteLine("       Set `$env:CODEX_WRAPPER_TEMP to an ASCII directory.")
-        exit 1
+        Fail 1 "`$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$cand' is not creatable: $_. Set `$env:CODEX_WRAPPER_TEMP to an ASCII directory."
     }
     return $cand
 }
@@ -75,6 +83,7 @@ try {
 }
 
 if ($exit -ne 0) {
+    Write-Output ("{0} codex debug models exited with code {1}" -f $ErrorSentinel, $exit)
     [Console]::Error.WriteLine("Error: codex debug models exited with code $exit")
     [Console]::Error.WriteLine($raw)
     exit $exit

@@ -2,12 +2,18 @@
 # Usage: powershell -ExecutionPolicy Bypass -File codex-wrapper.ps1 -Prompt "your question"
 #
 # Options:
-#   -Prompt       (required for invocation) The prompt to send to Codex
-#   -Model        (optional) Model name
-#   -Timeout      (optional) Timeout in seconds (default: 120)
-#   -WorkDir      (optional) Working directory for codex (default: ASCII temp)
-#   -Context      (optional) Additional context to prepend to the prompt
-#   -ContextFile  (optional) Path to a file containing context (avoids cmdline length limits)
+#   -Prompt        (required for invocation) The prompt to send to Codex
+#   -Model         (optional) Model name
+#   -Timeout       (optional) Timeout in seconds (default: 120)
+#   -Cd            (optional) Working directory for codex (default: ASCII temp)
+#   -WorkDir       (optional, alias for -Cd; kept for backward compatibility)
+#                  Passing both is an error — there is no silent precedence.
+#   -Context       (optional) Additional context to prepend to the prompt
+#   -ContextFile   (optional) Path to a file containing context (avoids cmdline length limits)
+#   -SandboxMode   (optional) Codex sandbox mode: read-only | workspace-write | danger-full-access
+#                  Default: read-only. Mirrors the bash wrapper (issue #14): codex CLI's implicit
+#                  default for non-VCS workdirs and prevents the workspace-write+on-request stall
+#                  when -Cd points at a git repository.
 #
 # Config subcommands (do not invoke codex):
 #   -SetModel NAME  Persist NAME as the default model in codex-wrapper.conf
@@ -18,8 +24,13 @@ param(
     [string]$Model = "",
     [int]$Timeout = 120,
     [string]$WorkDir = "",
+    [string]$Cd = "",
     [string]$Context = "",
     [string]$ContextFile = "",
+    # NOTE: deliberately no [ValidateSet] here. PS's own ValidateSet rejection
+    # happens before the script body runs, so we cannot route it through Fail
+    # and the sentinel is never emitted. We validate manually below instead.
+    [string]$SandboxMode = "read-only",
     [string]$SetModel = "",
     [switch]$ShowModel
 )
@@ -31,6 +42,33 @@ param(
 # - $OutputEncoding: encoding PS uses when piping to external processes
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Sentinel printed to stdout on every failure path so callers that cannot
+# separate stdout/stderr (the documented "bare single command" SKILL.md
+# invocation under Claude Code's permit umbrella) can still detect failure
+# from the stdout stream alone. See issue #19 review feedback / issue #20.
+$ErrorSentinel = "[CODEX_WRAPPER_ERROR]"
+
+# Fail <code> <message>
+# Emits "<sentinel> <message>" to stdout, the same message to stderr, exits.
+function Fail {
+    param([int]$Code, [string]$Message)
+    Write-Output ("{0} {1}" -f $ErrorSentinel, $Message)
+    [Console]::Error.WriteLine("Error: $Message")
+    exit $Code
+}
+
+# -Cd / -WorkDir reconciliation. Both name the same concept; -Cd matches the
+# Codex CLI's own --cd / -C flag. We reject the both-specified case rather
+# than silently picking one — silent precedence is the kind of thing that
+# bites callers months later, when the value they thought they had is being
+# ignored.
+if ((-not [string]::IsNullOrWhiteSpace($Cd)) -and (-not [string]::IsNullOrWhiteSpace($WorkDir))) {
+    Fail 1 "-Cd and -WorkDir are aliases; pass only one."
+}
+if (-not [string]::IsNullOrWhiteSpace($Cd)) {
+    $WorkDir = $Cd
+}
 
 # Max context size in bytes before warning (100KB)
 $MaxContextSize = 102400
@@ -48,9 +86,7 @@ $ModelNameRegex = '^[A-Za-z0-9._:/-]+$'
 function Test-ModelName {
     param([string]$Value, [string]$Source)
     if ($Value -notmatch $ModelNameRegex) {
-        [Console]::Error.WriteLine("Error: model name from $Source contains unsafe characters: '$Value'")
-        [Console]::Error.WriteLine("       Allowed: A-Z a-z 0-9 . _ : / -")
-        exit 1
+        Fail 1 ("model name from {0} contains unsafe characters: '{1}' (allowed: A-Z a-z 0-9 . _ : / -)" -f $Source, $Value)
     }
 }
 
@@ -134,15 +170,20 @@ if ($ShowModel) {
 
 # --- Input validation ---
 if ([string]::IsNullOrWhiteSpace($Prompt)) {
-    [Console]::Error.WriteLine("Error: -Prompt is required.")
-    exit 1
+    Fail 1 "-Prompt is required."
+}
+
+# Manual whitelist for -SandboxMode (see param block comment). Anything outside
+# the documented set fails fast through Fail so the sentinel is emitted.
+$AllowedSandboxModes = @("read-only", "workspace-write", "danger-full-access")
+if ($AllowedSandboxModes -notcontains $SandboxMode) {
+    Fail 1 ("-SandboxMode must be one of: read-only | workspace-write | danger-full-access (got: '{0}')." -f $SandboxMode)
 }
 
 # --- Load context from file if specified ---
 if (-not [string]::IsNullOrWhiteSpace($ContextFile)) {
     if (-not (Test-Path $ContextFile)) {
-        [Console]::Error.WriteLine("Error: Context file not found: $ContextFile")
-        exit 1
+        Fail 1 "Context file not found: $ContextFile"
     }
     $Context = Get-Content $ContextFile -Raw -Encoding UTF8
 }
@@ -173,14 +214,12 @@ function Test-IsAscii {
 function Resolve-AsciiWorkDir {
     if (-not [string]::IsNullOrWhiteSpace($script:WorkDir)) {
         if (-not (Test-IsAscii $script:WorkDir)) {
-            [Console]::Error.WriteLine("Error: -WorkDir must be ASCII-only due to Codex CLI WebSocket limitations: $($script:WorkDir)")
-            exit 1
+            Fail 1 "-Cd / -WorkDir must be ASCII-only due to Codex CLI WebSocket limitations: $($script:WorkDir)"
         }
         $candidate = $script:WorkDir
     } elseif (-not [string]::IsNullOrWhiteSpace($env:CODEX_WRAPPER_TEMP)) {
         if (-not (Test-IsAscii $env:CODEX_WRAPPER_TEMP)) {
-            [Console]::Error.WriteLine("Error: `$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)")
-            exit 1
+            Fail 1 "`$env:CODEX_WRAPPER_TEMP must be ASCII-only: $($env:CODEX_WRAPPER_TEMP)"
         }
         $candidate = $env:CODEX_WRAPPER_TEMP
     } elseif ((-not [string]::IsNullOrWhiteSpace($env:TEMP)) -and (Test-IsAscii $env:TEMP)) {
@@ -191,25 +230,21 @@ function Resolve-AsciiWorkDir {
         try {
             New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop | Out-Null
         } catch {
-            [Console]::Error.WriteLine("Error: `$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$candidate' is not creatable: $_")
-            [Console]::Error.WriteLine("       Set `$env:CODEX_WRAPPER_TEMP or -WorkDir to an ASCII directory.")
-            exit 1
+            Fail 1 "`$env:TEMP is non-ASCII ('$($env:TEMP)') and fallback '$candidate' is not creatable: $_. Set `$env:CODEX_WRAPPER_TEMP or -WorkDir to an ASCII directory."
         }
     }
     if (-not (Test-Path $candidate -PathType Container)) {
-        [Console]::Error.WriteLine("Error: workdir does not exist: $candidate")
-        exit 1
+        Fail 1 "workdir does not exist: $candidate"
     }
     return $candidate
 }
 $WorkDir = Resolve-AsciiWorkDir
 
-# --- Build the full prompt ---
-if (-not [string]::IsNullOrWhiteSpace($Context)) {
-    $fullPrompt = "$Context`n`n---`n`n$Prompt"
-} else {
-    $fullPrompt = $Prompt
-}
+# Whether the caller supplied any context (via -Context or -ContextFile). We
+# track this as a boolean separate from the string value so that an explicit
+# empty context is preserved (rather than silently re-interpreted as "no
+# context, fall back to argv-only").
+$hasContext = -not [string]::IsNullOrWhiteSpace($Context)
 
 # --- Temp files (placed under the validated ASCII workdir) ---
 $suffix = Get-Random -Minimum 10000 -Maximum 99999
@@ -222,10 +257,61 @@ function Cleanup {
     }
 }
 
+# --- Argv quoting per CommandLineToArgvW rules (issue #11) ---
+# Naive quoting (`replace " with \" then wrap in "`) gets the boundary cases
+# wrong: trailing backslashes inside a quoted token get doubled by the
+# de-quoter into closing it early. The Microsoft-documented rule is:
+#   - 2n backslashes followed by " → n backslashes plus a literal "
+#   - 2n+1 backslashes followed by " → n backslashes plus an escaped "
+#   - Any other backslash run is literal
+# We implement that, plus only wrap the argument in quotes when it contains
+# whitespace, " or is empty. Single backslashes in middle-of-path positions
+# stay untouched.
+function Convert-ArgumentToCommandLine {
+    param([string]$Argument)
+    if ($null -eq $Argument) { return '""' }
+    if ($Argument -eq "") { return '""' }
+
+    $needsQuoting = ($Argument -match '[\s"]')
+    if (-not $needsQuoting) { return $Argument }
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('"')
+    $i = 0
+    while ($i -lt $Argument.Length) {
+        $backslashes = 0
+        while ($i -lt $Argument.Length -and $Argument[$i] -eq '\') {
+            $backslashes++
+            $i++
+        }
+        if ($i -eq $Argument.Length) {
+            # Trailing backslashes: must double them so the closing " stays a delimiter.
+            [void]$sb.Append('\' * ($backslashes * 2))
+            break
+        } elseif ($Argument[$i] -eq '"') {
+            # Backslashes before a literal " — double them and escape the quote.
+            [void]$sb.Append('\' * ($backslashes * 2 + 1))
+            [void]$sb.Append('"')
+            $i++
+        } else {
+            # Backslashes followed by something else — keep them literal.
+            [void]$sb.Append('\' * $backslashes)
+            [void]$sb.Append($Argument[$i])
+            $i++
+        }
+    }
+    [void]$sb.Append('"')
+    return $sb.ToString()
+}
+
 $codexExit = 0
 try {
-    # --- Build codex arguments (prompt passed via stdin, not cmdline) ---
-    $codexArgs = @("exec", "-C", $WorkDir, "--skip-git-repo-check", "--ephemeral", "-o", $outFile)
+    # --- Build codex arguments ---
+    # Sandbox is always passed. Default read-only mirrors the bash wrapper
+    # (issue #14 / PR #15) and codex CLI's implicit default for non-VCS
+    # workdirs; it avoids the workspace-write + on-request stall when -Cd
+    # points at a git repository.
+    $codexArgs = @("exec", "-C", $WorkDir, "-s", $SandboxMode, "--skip-git-repo-check", "--ephemeral", "-o", $outFile)
 
     if (-not [string]::IsNullOrWhiteSpace($Model)) {
         $codexArgs += @("-m", $Model)
@@ -236,9 +322,11 @@ try {
         [Console]::Error.WriteLine("MODEL: $Model")
     }
 
-    # Use "-" to tell codex to read prompt from stdin
-    $codexArgs += "--"
-    $codexArgs += "-"
+    # Prompt goes as the positional argument after `--`. Context (if any) is
+    # streamed via stdin in a separate step; `codex exec --help` documents
+    # that "if stdin is piped and a prompt is also provided, stdin is appended
+    # as a <stdin> block", which is exactly the segmentation we want.
+    $codexArgs += @("--", $Prompt)
 
     # --- Resolve codex executable ---
     # npm installs codex.ps1 + codex.cmd; we need the .cmd for Process.Start
@@ -249,15 +337,8 @@ try {
     }
 
     # --- Build argument string for Process.Start ---
-    # NOTE: this is a best-effort quoting for typical inputs. -WorkDir with a
-    # trailing backslash or embedded quote can still defeat Windows argv
-    # parsing; tracked separately (see follow-up issue). Inputs reaching here
-    # are: $WorkDir (ASCII-checked above), $outFile (our temp path),
-    # constant flags, and $Model (Test-ModelName'd). User-supplied prompts
-    # never travel via the command line — they go through stdin.
     $escapedArgs = ($codexArgs | ForEach-Object {
-        $escaped = $_ -replace '"', '\"'
-        "`"$escaped`""
+        Convert-ArgumentToCommandLine -Argument $_
     }) -join " "
 
     # --- Execute codex via Process.Start (no cmd.exe, no batch file) ---
@@ -272,10 +353,16 @@ try {
 
     $process = [System.Diagnostics.Process]::Start($pinfo)
 
-    # Write prompt to stdin using BOM-less UTF-8 (PS 5.1 compatible)
+    # Stdin protocol:
+    #   - With context: write context bytes (no trailing newline so the file
+    #     boundary is preserved), then close stdin. codex sees a <stdin> block.
+    #   - Without context: close stdin immediately so codex doesn't block
+    #     waiting for input.
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $writer = New-Object System.IO.StreamWriter($process.StandardInput.BaseStream, $utf8NoBom)
-    $writer.Write($fullPrompt)
+    if ($hasContext) {
+        $writer.Write($Context)
+    }
     $writer.Close()
 
     # Read stdout and stderr asynchronously to avoid deadlock
@@ -286,9 +373,8 @@ try {
 
     if (-not $exited) {
         try { $process.Kill() } catch {}
-        [Console]::Error.WriteLine("Error: Codex CLI timed out after ${Timeout}s")
         Cleanup
-        exit 2
+        Fail 2 "Codex CLI timed out after ${Timeout}s"
     }
 
     $codexExit = $process.ExitCode
@@ -306,7 +392,12 @@ try {
         if ($output.Length -gt 0) {
             Write-Output $output
         } else {
-            [Console]::Error.WriteLine("Codex CLI returned empty output.")
+            # Codex ran but produced no usable content. We emit the sentinel
+            # + short reason on stdout (so skills detecting failure via the
+            # combined stream still see it), and also dump codex's own stderr
+            # to wrapper's stderr for human debugging.
+            Write-Output ("{0} Codex CLI returned empty output (exit={1})." -f $ErrorSentinel, $codexExit)
+            [Console]::Error.WriteLine("Error: Codex CLI returned empty output.")
             if ((Test-Path $errFile) -and (Get-Item $errFile).Length -gt 0) {
                 [Console]::Error.WriteLine("Stderr:")
                 [Console]::Error.WriteLine((Get-Content $errFile -Raw -Encoding UTF8))
@@ -315,7 +406,8 @@ try {
             exit 1
         }
     } else {
-        [Console]::Error.WriteLine("Codex CLI produced no output file. Exit code: $codexExit")
+        Write-Output ("{0} Codex CLI produced no output file (exit={1})." -f $ErrorSentinel, $codexExit)
+        [Console]::Error.WriteLine("Error: Codex CLI produced no output file. Exit code: $codexExit")
         if ((Test-Path $errFile) -and (Get-Item $errFile).Length -gt 0) {
             [Console]::Error.WriteLine("Stderr:")
             [Console]::Error.WriteLine((Get-Content $errFile -Raw -Encoding UTF8))
@@ -324,9 +416,8 @@ try {
         exit 1
     }
 } catch {
-    [Console]::Error.WriteLine("Error: $_")
     Cleanup
-    exit 1
+    Fail 1 ("{0}" -f $_)
 }
 
 Cleanup
@@ -335,7 +426,13 @@ Cleanup
 # Matches the bash wrapper's contract; the legacy "always exit 0" behaviour
 # was a workaround for cmd.exe ERRORLEVEL noise that no longer applies now
 # that we invoke codex via Process.Start instead of through cmd.exe.
+#
+# Sentinel: codex produced *some* output (it was printed above), but the run
+# itself failed; without the sentinel the skill would see only the partial
+# content and read it as a normal answer.
 if ($codexExit -ne 0) {
+    Write-Output ("{0} Codex CLI exited with non-zero status: {1}" -f $ErrorSentinel, $codexExit)
+    [Console]::Error.WriteLine("Error: Codex CLI exited with non-zero status: $codexExit")
     exit $codexExit
 }
 exit 0
