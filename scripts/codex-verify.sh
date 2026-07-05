@@ -96,9 +96,9 @@ relative_path() {
 enumerate_protected() {
     local output="$1" file
     : >"$output" || return 1
-    for file in "$repo_path"/.env "$repo_path"/.env.*; do
-        [[ -e "$file" || -L "$file" ]] && printf '%s\0' "$file" >>"$output"
-    done
+    find "$repo_path" -maxdepth 1 -mindepth 1 \( -type f -o -type l \) \
+        \( -name '.env' -o -name '.env.*' \) ! -name '.env.\*' \
+        -print0 >>"$output" || return 1
     find "$repo_path" -path "$repo_path/.git" -prune -o \
         \( -type f -o -type l \) \
         \( -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \) \

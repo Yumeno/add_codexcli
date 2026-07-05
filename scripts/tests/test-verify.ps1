@@ -86,6 +86,13 @@ try {
         $r = Invoke-Check
         if ($r.Code -ne 2 -or $r.Output -notmatch "protected file added: .env") { throw $r.Output }
     }
+    Test-Case "protected .env suffix modification is a violation" {
+        New-Repo; [IO.File]::WriteAllText((Join-Path $Root ".env.foo"), "A=1`n"); New-Snapshot
+        [IO.File]::WriteAllText((Join-Path $Root ".env.foo"), "A=2`n"); $r = Invoke-Check
+        if ($r.Code -ne 2 -or $r.Output -notmatch "protected file modified: .env.foo") {
+            throw $r.Output
+        }
+    }
     Test-Case "ordinary untracked file is allowed" {
         New-Repo; New-Snapshot; [IO.File]::WriteAllText((Join-Path $Root "untracked.txt"), "new`n")
         $r = Invoke-Check
@@ -176,6 +183,28 @@ try {
         if ($LASTEXITCODE -ne 1 -or ($output | Out-String) -notmatch
             "\[CODEX_VERIFY_ERROR\] snapshot file must be outside the repository") {
             throw ($output | Out-String)
+        }
+    }
+    Test-Case "missing snapshot parent fails clearly" {
+        New-Repo
+        $missingParent = Join-Path $env:TEMP "codex_verify_missing_$PID"
+        Remove-Item $missingParent -Recurse -Force -ErrorAction SilentlyContinue
+        $output = & powershell -ExecutionPolicy Bypass -NoProfile -File $Verify -Snapshot `
+            -Repo $Root -Out (Join-Path $missingParent "snapshot.txt") 2>&1
+        if ($LASTEXITCODE -ne 1 -or ($output | Out-String) -notmatch
+            "\[CODEX_VERIFY_ERROR\] Snapshot parent directory not found:") {
+            throw ($output | Out-String)
+        }
+    }
+    Test-Case "git failure includes stderr" {
+        New-Repo
+        Remove-Item (Join-Path $Root ".git\HEAD") -Force
+        $output = & powershell -ExecutionPolicy Bypass -NoProfile -File $Verify -Snapshot `
+            -Repo $Root -Out $SnapshotPath 2>&1
+        $text = $output | Out-String
+        if ($LASTEXITCODE -ne 1 -or $text -notmatch
+            "\[CODEX_VERIFY_ERROR\] Git command failed:.*-- .*fatal:") {
+            throw $text
         }
     }
     Test-Case "snapshot through junction into repository fails" {

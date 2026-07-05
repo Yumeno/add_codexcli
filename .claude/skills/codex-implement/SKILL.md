@@ -228,6 +228,17 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex
 ALLOWED 行は「ユーザー承認済みの保護対象変更」として検収報告に必ず含める。
 ユーザーの事前承認なしに `-Allow` を付けてはならない。
 
+**`-Allow` のパターンマッチ仕様**:
+- パターンは **リポジトリルートからの相対パス** に対して照合する
+  (例: ルート直下の `.env` は `-Allow .env`、`config/.env` は `-Allow config/.env`)
+- **区切り文字は `/`** (Windows パスの `\` ではない)。両実装で統一
+- **glob マッチ (case-sensitive)**。`*` は path segment 内のみマッチし、`/` は跨がない
+  (例: `-Allow *.env` は直下の `foo.env` にマッチするが、`sub/foo.env` にはマッチしない)
+- **サブディレクトリを含めて許可** したい場合は明示的に列挙する
+  (PowerShell 版なら `-Allow ".env,config/.env"`、bash 版なら `--allow .env --allow config/.env`)
+- **`-Allow *` のような過大パターンを使わない**。承認対象を最小限のパスに絞る
+  (万一の想定外パスの変更が VIOLATION として上がる余地を残す設計思想)
+
 ### 6. 結果を表示する
 
 失敗検知のフォーマットは上記「4. 失敗検知」の通り。成功時は以下のテンプレートを使う。

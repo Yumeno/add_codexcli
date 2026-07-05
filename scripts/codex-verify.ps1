@@ -24,9 +24,18 @@ function Fail {
 
 function Invoke-Git {
     param([string[]]$Arguments)
-    $result = & git -C $script:RepoPath @Arguments 2>$null
-    if ($LASTEXITCODE -ne 0) { Fail "Git command failed: git $($Arguments -join ' ')" }
-    return @($result)
+    $stderrFile = [IO.Path]::GetTempFileName()
+    try {
+        $result = & git -C $script:RepoPath @Arguments 2>$stderrFile
+        if ($LASTEXITCODE -ne 0) {
+            $stderr = (Get-Content -LiteralPath $stderrFile -Raw -ErrorAction SilentlyContinue) `
+                -replace "`r?`n$", ""
+            Fail "Git command failed: git $($Arguments -join ' ') -- $stderr"
+        }
+        return @($result)
+    } finally {
+        Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function To-Base64 {
@@ -43,15 +52,22 @@ function From-Base64 {
 function Test-ReparsePoint {
     param([string]$Path)
     try {
-        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-        return (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-    } catch { Fail "Unable to inspect path: $Path" }
+        $attrs = [IO.File]::GetAttributes($Path)
+        return (($attrs -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    } catch [System.IO.FileNotFoundException] {
+        return $false
+    } catch [System.IO.DirectoryNotFoundException] {
+        return $false
+    }
 }
 
 function Get-SnapshotFullPath {
     param([string]$Path)
     try { $full = [IO.Path]::GetFullPath($Path) } catch { Fail "Invalid snapshot path: $Path" }
     $parent = [IO.Path]::GetDirectoryName($full)
+    if (-not [IO.Directory]::Exists($parent)) {
+        Fail "Snapshot parent directory not found: $parent"
+    }
     while (-not [string]::IsNullOrEmpty($parent)) {
         if ([IO.Directory]::Exists($parent) -and (Test-ReparsePoint $parent)) {
             Fail "Snapshot path parent must not be a reparse point."

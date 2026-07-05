@@ -79,6 +79,16 @@ case_env_added() {
     new_repo; snapshot; printf 'A=1\n' >"$ROOT/.env"; run_check
     [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file added: .env"* ]]
 }
+case_env_suffix_modified() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env.foo"; snapshot
+    printf 'A=2\n' >"$ROOT/.env.foo"; run_check
+    [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file modified: .env.foo"* ]]
+}
+case_literal_env_glob_ignored() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env.*"; snapshot
+    printf 'A=2\n' >"$ROOT/.env.*"; run_check
+    [[ $CHECK_CODE -eq 0 && "$CHECK_OUTPUT" != *"protected file modified: .env.*"* ]]
+}
 case_untracked() {
     new_repo; snapshot; printf 'new\n' >"$ROOT/untracked.txt"; run_check
     [[ $CHECK_CODE -eq 0 && "$CHECK_OUTPUT" == *"untracked.txt"* ]]
@@ -146,6 +156,16 @@ case_snapshot_inside_repo() {
     output="$(bash "$VERIFY" snapshot --repo "$ROOT" --out "$ROOT/inside.txt" 2>&1)"; code=$?; set -e
     [[ $code -eq 1 && "$output" == *"[CODEX_VERIFY_ERROR] snapshot file must be outside the repository"* ]]
 }
+case_missing_snapshot_parent() {
+    new_repo
+    missing_parent="${TMPDIR:-/tmp}/codex_verify_missing_$RANDOM"
+    set +e
+    output="$(bash "$VERIFY" snapshot --repo "$ROOT" --out "$missing_parent/snapshot.txt" 2>&1)"
+    code=$?
+    set -e
+    [[ $code -eq 1 &&
+        "$output" == "[CODEX_VERIFY_ERROR] Snapshot parent directory not found:"* ]]
+}
 case_snapshot_symlink_parent_into_repo() {
     new_repo
     ln -s "$ROOT" "$LINK_PATH" 2>/dev/null || true
@@ -179,6 +199,8 @@ test_case "branch change is a violation" case_branch_change
 test_case "protected .env modification is a violation" case_env_modified
 test_case "allowed .env modification is informational" case_env_allowed
 test_case "new protected .env is a violation" case_env_added
+test_case "protected .env suffix modification is a violation" case_env_suffix_modified
+test_case "literal .env glob name is ignored" case_literal_env_glob_ignored
 test_case "ordinary untracked file is allowed" case_untracked
 test_case "snapshot outside git repository fails" case_not_repo
 test_case "missing snapshot fails" case_missing_snapshot
@@ -192,6 +214,7 @@ test_case "invalid base64 protected path fails" case_invalid_base64_protected_pa
 test_case "detached HEAD is supported" case_detached_head
 test_case "allow matching is case-sensitive" case_allow_case_sensitive
 test_case "snapshot inside repository fails" case_snapshot_inside_repo
+test_case "missing snapshot parent fails clearly" case_missing_snapshot_parent
 test_case "snapshot through symlink into repository fails" case_snapshot_symlink_parent_into_repo
 test_case "symlink target change is a violation" case_symlink_target_changed
 printf 'Passed: %d / %d\n' "$passed" "$total"
