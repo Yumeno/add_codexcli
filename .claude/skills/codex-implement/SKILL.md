@@ -160,7 +160,8 @@ Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
    ```bash
    bash "$HOME/.claude/scripts/codex-verify.sh" check --snapshot "<手順1で記録したsnapshotパス>" --repo "/path/to/repo"
    ```
-2. check の出力を以下のルールで判定する:
+2. check の出力を以下のルールで判定する
+   （tool result は stdout / stderr の混合 stream なので、**どちらに出た行でも判定対象**）:
    - 行頭 `[CODEX_VERIFY_VIOLATION]` の行があれば = **Codex が禁止操作をした**
      （コミット・branch 切替・保護対象ファイルの変更等）。**最優先で警告** し、
      violation の内容に応じたロールバック案内（手順 5.6 の分岐）に進む

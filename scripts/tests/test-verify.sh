@@ -8,7 +8,12 @@ total=0
 passed=0
 
 SNAPSHOT_FILE="$ROOT.snapshot.txt"
-cleanup() { rm -rf "$ROOT"; rm -f "$SNAPSHOT_FILE"; }
+LINK_PATH="$ROOT-link"
+cleanup() {
+    rm -rf "$ROOT"
+    rm -f "$SNAPSHOT_FILE" "$LINK_PATH" 2>/dev/null || true
+    rmdir "$LINK_PATH" 2>/dev/null || true
+}
 trap cleanup EXIT
 
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
@@ -21,7 +26,8 @@ test_case() {
 
 new_repo() {
     rm -rf "$ROOT"
-    rm -f "$SNAPSHOT_FILE"
+    rm -f "$SNAPSHOT_FILE" "$LINK_PATH" 2>/dev/null || true
+    rmdir "$LINK_PATH" 2>/dev/null || true
     mkdir -p "$ROOT"
     git -C "$ROOT" init -q
     git -C "$ROOT" config user.email test@example.com
@@ -113,6 +119,19 @@ case_snapshot_tampered() {
     run_check
     [[ $CHECK_CODE -eq 1 && "$CHECK_OUTPUT" == *"[CODEX_VERIFY_ERROR]"* ]]
 }
+case_empty_protected_path() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env"; snapshot
+    sed -i 's/^protected=[^:]*:/protected=:/' "$SNAPSHOT_FILE"
+    run_check
+    [[ $CHECK_CODE -eq 1 &&
+        "$CHECK_OUTPUT" == "[CODEX_VERIFY_ERROR] Invalid snapshot protected path."* ]]
+}
+case_invalid_base64_protected_path() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env"; snapshot
+    sed -i 's/^protected=[^:]*:/protected=!:/' "$SNAPSHOT_FILE"
+    run_check
+    [[ $CHECK_CODE -eq 1 && "$CHECK_OUTPUT" == "[CODEX_VERIFY_ERROR]"* ]]
+}
 case_detached_head() {
     new_repo; git -C "$ROOT" checkout -q --detach HEAD; snapshot; run_check
     [[ $CHECK_CODE -eq 0 && "$CHECK_OUTPUT" != *"[CODEX_VERIFY_VIOLATION]"* ]]
@@ -126,6 +145,20 @@ case_snapshot_inside_repo() {
     new_repo; set +e
     output="$(bash "$VERIFY" snapshot --repo "$ROOT" --out "$ROOT/inside.txt" 2>&1)"; code=$?; set -e
     [[ $code -eq 1 && "$output" == *"[CODEX_VERIFY_ERROR] snapshot file must be outside the repository"* ]]
+}
+case_snapshot_symlink_parent_into_repo() {
+    new_repo
+    ln -s "$ROOT" "$LINK_PATH" 2>/dev/null || true
+    if [[ ! -L "$LINK_PATH" ]]; then
+        printf '%s\n' "SKIP: symlinks are not available"
+        return 0
+    fi
+    set +e
+    output="$(bash "$VERIFY" snapshot --repo "$ROOT" --out "$LINK_PATH/snapshot.txt" 2>&1)"
+    code=$?
+    set -e
+    [[ $code -eq 1 &&
+        "$output" == "[CODEX_VERIFY_ERROR] snapshot file must be outside the repository"* ]]
 }
 case_symlink_target_changed() {
     new_repo; printf 'one\n' >"$ROOT/target-one"; printf 'two\n' >"$ROOT/target-two"
@@ -154,9 +187,12 @@ test_case "non-sample hook addition is a violation" case_hook_added
 test_case "subdirectory repo is normalized" case_subdir_normalized
 test_case "protected .env deletion is a violation" case_env_deleted
 test_case "invalid protected hash fails" case_snapshot_tampered
+test_case "empty protected path fails" case_empty_protected_path
+test_case "invalid base64 protected path fails" case_invalid_base64_protected_path
 test_case "detached HEAD is supported" case_detached_head
 test_case "allow matching is case-sensitive" case_allow_case_sensitive
 test_case "snapshot inside repository fails" case_snapshot_inside_repo
+test_case "snapshot through symlink into repository fails" case_snapshot_symlink_parent_into_repo
 test_case "symlink target change is a violation" case_symlink_target_changed
 printf 'Passed: %d / %d\n' "$passed" "$total"
 [[ $passed -eq $total ]]

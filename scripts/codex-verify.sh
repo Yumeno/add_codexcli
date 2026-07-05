@@ -171,6 +171,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
             [[ "$digest" =~ ^[[:xdigit:]]{64}$ || "$digest" == symlink:* ]] ||
                 die "Invalid protected hash in snapshot."
             path="$(b64_decode "$encoded" 2>/dev/null)" || die "Invalid snapshot protected path."
+            [[ -n "$path" ]] || die "Invalid snapshot protected path."
             [[ ! -v "old_hashes[$path]" ]] || die "Duplicate protected path in snapshot."
             old_hashes["$path"]="$digest"
             ;;

@@ -51,6 +51,15 @@ function Test-ReparsePoint {
 function Get-SnapshotFullPath {
     param([string]$Path)
     try { $full = [IO.Path]::GetFullPath($Path) } catch { Fail "Invalid snapshot path: $Path" }
+    $parent = [IO.Path]::GetDirectoryName($full)
+    while (-not [string]::IsNullOrEmpty($parent)) {
+        if ([IO.Directory]::Exists($parent) -and (Test-ReparsePoint $parent)) {
+            Fail "Snapshot path parent must not be a reparse point."
+        }
+        $next = [IO.Path]::GetDirectoryName($parent)
+        if ($next -eq $parent) { break }
+        $parent = $next
+    }
     $prefix = $script:RepoPath + [IO.Path]::DirectorySeparatorChar
     if ($full.Equals($script:RepoPath, [StringComparison]::OrdinalIgnoreCase) -or
         $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -204,8 +213,9 @@ try {
         } elseif ($line.StartsWith("protected=")) {
             $entry = $line.Substring(10)
             $separator = $entry.IndexOf(":")
-            if ($separator -lt 1) { Fail "Invalid protected entry in snapshot." }
+            if ($separator -lt 0) { Fail "Invalid protected entry in snapshot." }
             $path = From-Base64 $entry.Substring(0, $separator)
+            if ([string]::IsNullOrEmpty($path)) { Fail "Invalid snapshot protected path." }
             $value = $entry.Substring($separator + 1)
             if ($value -notmatch "^[0-9A-Fa-f]{64}$" -and -not $value.StartsWith("symlink:")) {
                 Fail "Invalid protected hash in snapshot."

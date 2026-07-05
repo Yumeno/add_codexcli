@@ -2,6 +2,7 @@
 $Verify = Join-Path $PSScriptRoot "..\codex-verify.ps1"
 $Root = Join-Path $env:TEMP "codex_verify_test_ps_$PID"
 $SnapshotPath = "$Root.snapshot.txt"
+$JunctionPath = "$Root-junction"
 $script:Total = 0
 $script:Passed = 0
 
@@ -17,7 +18,14 @@ function Test-Case {
     }
 }
 
+function Remove-TestJunction {
+    if ([IO.Directory]::Exists($JunctionPath)) {
+        try { [IO.Directory]::Delete($JunctionPath) } catch {}
+    }
+}
+
 function New-Repo {
+    Remove-TestJunction
     Remove-Item $Root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $SnapshotPath -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $Root | Out-Null
@@ -132,6 +140,26 @@ try {
         $r = Invoke-Check
         if ($r.Code -ne 1 -or $r.Output -notmatch "\[CODEX_VERIFY_ERROR\]") { throw $r.Output }
     }
+    Test-Case "empty protected path fails" {
+        New-Repo; [IO.File]::WriteAllText((Join-Path $Root ".env"), "A=1`n"); New-Snapshot
+        $content = [IO.File]::ReadAllText($SnapshotPath)
+        $content = [Text.RegularExpressions.Regex]::Replace(
+            $content, "protected=[^:]*:([0-9a-f]{64})", "protected=:`$1")
+        [IO.File]::WriteAllText($SnapshotPath, $content, (New-Object Text.UTF8Encoding($false)))
+        $r = Invoke-Check
+        if ($r.Code -ne 1 -or $r.Output -notmatch "\[CODEX_VERIFY_ERROR\] Invalid snapshot protected path\." ) {
+            throw $r.Output
+        }
+    }
+    Test-Case "invalid base64 protected path fails" {
+        New-Repo; [IO.File]::WriteAllText((Join-Path $Root ".env"), "A=1`n"); New-Snapshot
+        $content = [IO.File]::ReadAllText($SnapshotPath)
+        $content = [Text.RegularExpressions.Regex]::Replace(
+            $content, "protected=[^:]*:", "protected=!:")
+        [IO.File]::WriteAllText($SnapshotPath, $content, (New-Object Text.UTF8Encoding($false)))
+        $r = Invoke-Check
+        if ($r.Code -ne 1 -or $r.Output -notmatch "\[CODEX_VERIFY_ERROR\]") { throw $r.Output }
+    }
     Test-Case "detached HEAD is supported" {
         New-Repo; & git -C $Root checkout -q --detach HEAD; New-Snapshot; $r = Invoke-Check
         if ($r.Code -ne 0 -or $r.Output -match "\[CODEX_VERIFY_VIOLATION\]") { throw $r.Output }
@@ -147,6 +175,27 @@ try {
             -Repo $Root -Out (Join-Path $Root "inside.txt") 2>&1
         if ($LASTEXITCODE -ne 1 -or ($output | Out-String) -notmatch
             "\[CODEX_VERIFY_ERROR\] snapshot file must be outside the repository") {
+            throw ($output | Out-String)
+        }
+    }
+    Test-Case "snapshot through junction into repository fails" {
+        New-Repo
+        try {
+            New-Item -ItemType Junction -Path $JunctionPath -Target $Root `
+                -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Host "SKIP: junctions are not available"
+            return
+        }
+        $item = Get-Item -LiteralPath $JunctionPath -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            Write-Host "SKIP: junctions are not available"
+            return
+        }
+        $output = & powershell -ExecutionPolicy Bypass -NoProfile -File $Verify -Snapshot `
+            -Repo $Root -Out (Join-Path $JunctionPath "snapshot.txt") 2>&1
+        if ($LASTEXITCODE -ne 1 -or ($output | Out-String) -notmatch
+            "\[CODEX_VERIFY_ERROR\] Snapshot path parent must not be a reparse point\.") {
             throw ($output | Out-String)
         }
     }
@@ -174,6 +223,7 @@ try {
         if ($r.Code -ne 2 -or $r.Output -notmatch "protected file modified: .env") { throw $r.Output }
     }
 } finally {
+    Remove-TestJunction
     Remove-Item $Root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $SnapshotPath -Force -ErrorAction SilentlyContinue
 }
