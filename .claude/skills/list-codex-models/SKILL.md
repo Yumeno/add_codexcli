@@ -60,7 +60,7 @@ bash "$HOME/.claude/scripts/list-codex-models.sh"
 ### 2. 失敗検知 (重要)
 
 helper が失敗したとき、**stdout の先頭に `[CODEX_WRAPPER_ERROR]` で始まる行が出る**。
-tool result の中に `[CODEX_WRAPPER_ERROR]` が含まれていたら、**モデル一覧ではなく
+tool result のいずれかの行が `[CODEX_WRAPPER_ERROR]` で始まっていたら、**モデル一覧ではなく
 helper のエラーとして提示する**。例:
 
 ```

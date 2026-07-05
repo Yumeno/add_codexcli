@@ -60,8 +60,8 @@ bash "$HOME/.claude/scripts/codex-wrapper.sh" --set-model "gpt-5.5"
 ### 2. 失敗検知 (重要)
 
 wrapper が失敗したとき (例: 不正な文字を含むモデル名)、**stdout の先頭に
-`[CODEX_WRAPPER_ERROR]` で始まる行が出る**。tool result の中に `[CODEX_WRAPPER_ERROR]`
-が含まれていたら、**成功扱いせず wrapper のエラーとして提示する**。例:
+`[CODEX_WRAPPER_ERROR]` で始まる行が出る**。tool result のいずれかの行が
+`[CODEX_WRAPPER_ERROR]` で始まっていたら、**成功扱いせず wrapper のエラーとして提示する**。例:
 
 ```
 ## codex-wrapper の呼び出しに失敗しました
