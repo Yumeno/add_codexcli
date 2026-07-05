@@ -7,7 +7,8 @@ ROOT="${TMPDIR:-/tmp}/codex_verify_test_$$"
 total=0
 passed=0
 
-cleanup() { rm -rf "$ROOT"; }
+SNAPSHOT_FILE="$ROOT.snapshot.txt"
+cleanup() { rm -rf "$ROOT"; rm -f "$SNAPSHOT_FILE"; }
 trap cleanup EXIT
 
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
@@ -20,6 +21,7 @@ test_case() {
 
 new_repo() {
     rm -rf "$ROOT"
+    rm -f "$SNAPSHOT_FILE"
     mkdir -p "$ROOT"
     git -C "$ROOT" init -q
     git -C "$ROOT" config user.email test@example.com
@@ -30,12 +32,12 @@ new_repo() {
 }
 
 snapshot() {
-    bash "$VERIFY" snapshot --repo "$ROOT" --out "$ROOT/snapshot.txt" >/dev/null
+    bash "$VERIFY" snapshot --repo "$ROOT" --out "$SNAPSHOT_FILE" >/dev/null
 }
 
 run_check() {
     set +e
-    CHECK_OUTPUT="$(bash "$VERIFY" check --repo "$ROOT" --snapshot "$ROOT/snapshot.txt" "$@" 2>&1)"
+    CHECK_OUTPUT="$(bash "$VERIFY" check --repo "$ROOT" --snapshot "$SNAPSHOT_FILE" "$@" 2>&1)"
     CHECK_CODE=$?
     set -e
 }
@@ -85,6 +87,56 @@ case_missing_snapshot() {
     output="$(bash "$VERIFY" check --repo "$ROOT" --snapshot "$ROOT/missing.txt" 2>&1)"; code=$?; set -e
     [[ $code -eq 1 && "$output" == *"[CODEX_VERIFY_ERROR]"* ]]
 }
+case_git_config_modified() {
+    new_repo; snapshot; git -C "$ROOT" config verify.test changed; run_check
+    [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file modified: .git/config"* ]]
+}
+case_hook_added() {
+    new_repo; snapshot; printf 'echo hook\n' >"$ROOT/.git/hooks/pre-commit"; run_check
+    [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file added: .git/hooks/pre-commit"* ]]
+}
+case_subdir_normalized() {
+    new_repo; mkdir "$ROOT/sub"; printf 'A=1\n' >"$ROOT/.env"
+    bash "$VERIFY" snapshot --repo "$ROOT/sub" --out "$SNAPSHOT_FILE" >/dev/null 2>&1
+    printf 'A=2\n' >"$ROOT/.env"; set +e
+    output="$(bash "$VERIFY" check --repo "$ROOT/sub" --snapshot "$SNAPSHOT_FILE" 2>&1)"; code=$?; set -e
+    [[ $code -eq 2 && "$output" == *"Note: repo normalized to"* &&
+        "$output" == *"protected file modified: .env"* ]]
+}
+case_env_deleted() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env"; snapshot; rm "$ROOT/.env"; run_check
+    [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file deleted: .env"* ]]
+}
+case_snapshot_tampered() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env"; snapshot
+    sed -i 's/:[0-9a-f]\{64\}$/:bad/' "$SNAPSHOT_FILE"
+    run_check
+    [[ $CHECK_CODE -eq 1 && "$CHECK_OUTPUT" == *"[CODEX_VERIFY_ERROR]"* ]]
+}
+case_detached_head() {
+    new_repo; git -C "$ROOT" checkout -q --detach HEAD; snapshot; run_check
+    [[ $CHECK_CODE -eq 0 && "$CHECK_OUTPUT" != *"[CODEX_VERIFY_VIOLATION]"* ]]
+}
+case_allow_case_sensitive() {
+    new_repo; printf 'A=1\n' >"$ROOT/.env"; snapshot
+    printf 'A=2\n' >"$ROOT/.env"; run_check --allow .ENV
+    [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file modified: .env"* ]]
+}
+case_snapshot_inside_repo() {
+    new_repo; set +e
+    output="$(bash "$VERIFY" snapshot --repo "$ROOT" --out "$ROOT/inside.txt" 2>&1)"; code=$?; set -e
+    [[ $code -eq 1 && "$output" == *"[CODEX_VERIFY_ERROR] snapshot file must be outside the repository"* ]]
+}
+case_symlink_target_changed() {
+    new_repo; printf 'one\n' >"$ROOT/target-one"; printf 'two\n' >"$ROOT/target-two"
+    ln -s target-one "$ROOT/.env" 2>/dev/null || true
+    if [[ ! -L "$ROOT/.env" ]]; then
+        printf '%s\n' "SKIP: symlinks are not available"
+        return 0
+    fi
+    snapshot; rm "$ROOT/.env"; ln -s target-two "$ROOT/.env"; run_check
+    [[ $CHECK_CODE -eq 2 && "$CHECK_OUTPUT" == *"protected file modified: .env"* ]]
+}
 
 printf '%s\n' '=== codex-verify bash tests ==='
 test_case "snapshot then unchanged check" case_unchanged
@@ -97,5 +149,14 @@ test_case "new protected .env is a violation" case_env_added
 test_case "ordinary untracked file is allowed" case_untracked
 test_case "snapshot outside git repository fails" case_not_repo
 test_case "missing snapshot fails" case_missing_snapshot
+test_case "git config modification is a violation" case_git_config_modified
+test_case "non-sample hook addition is a violation" case_hook_added
+test_case "subdirectory repo is normalized" case_subdir_normalized
+test_case "protected .env deletion is a violation" case_env_deleted
+test_case "invalid protected hash fails" case_snapshot_tampered
+test_case "detached HEAD is supported" case_detached_head
+test_case "allow matching is case-sensitive" case_allow_case_sensitive
+test_case "snapshot inside repository fails" case_snapshot_inside_repo
+test_case "symlink target change is a violation" case_symlink_target_changed
 printf 'Passed: %d / %d\n' "$passed" "$total"
 [[ $passed -eq $total ]]

@@ -1,4 +1,6 @@
 # codex-verify.ps1 - Snapshot and verify repository safety invariants.
+# Symlinks are recorded by link target; changes behind the target are not tracked.
+# -Allow accepts comma-bound arrays; patterns containing commas cannot be specified.
 param(
     [switch]$Snapshot,
     [switch]$Check,
@@ -16,7 +18,6 @@ $AllowedSentinel = "[CODEX_VERIFY_ALLOWED]"
 
 function Fail {
     param([string]$Message)
-    Write-Output "$ErrorSentinel $Message"
     [Console]::Error.WriteLine("$ErrorSentinel $Message")
     exit 1
 }
@@ -30,45 +31,100 @@ function Invoke-Git {
 
 function To-Base64 {
     param([string]$Value)
-    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
 }
 
 function From-Base64 {
     param([string]$Value)
-    try { return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value)) }
+    try { [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Value)) }
     catch { Fail "Invalid Base64 value in snapshot." }
 }
 
+function Test-ReparsePoint {
+    param([string]$Path)
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        return (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    } catch { Fail "Unable to inspect path: $Path" }
+}
+
+function Get-SnapshotFullPath {
+    param([string]$Path)
+    try { $full = [IO.Path]::GetFullPath($Path) } catch { Fail "Invalid snapshot path: $Path" }
+    $prefix = $script:RepoPath + [IO.Path]::DirectorySeparatorChar
+    if ($full.Equals($script:RepoPath, [StringComparison]::OrdinalIgnoreCase) -or
+        $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        Fail "snapshot file must be outside the repository"
+    }
+    if ([IO.File]::Exists($full) -and (Test-ReparsePoint $full)) {
+        Fail "Snapshot file must not be a reparse point."
+    }
+    return $full
+}
+
+function Get-LinkValue {
+    param($Item)
+    if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) { return $null }
+    $target = $Item.Target
+    if ($target -is [array]) { $target = $target -join "`n" }
+    if ($null -eq $target) { Fail "Unable to read symlink target: $($Item.FullName)" }
+    return "symlink:$target"
+}
+
 function Get-ProtectedFiles {
-    $result = @()
-    @(".env") + @(Get-ChildItem -LiteralPath $script:RepoPath -Filter ".env.*" -File -ErrorAction SilentlyContinue |
-        ForEach-Object { $_.Name }) | ForEach-Object {
-        $candidate = Join-Path $script:RepoPath $_
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $result += Get-Item -LiteralPath $candidate }
-    }
-    $result += Get-ChildItem -LiteralPath $script:RepoPath -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.FullName -notlike ((Join-Path $script:RepoPath ".git") + "\*") -and
-            @(".pem", ".key", ".p12", ".pfx") -contains $_.Extension.ToLowerInvariant()
+    try {
+        $result = New-Object System.Collections.ArrayList
+        Get-ChildItem -LiteralPath $script:RepoPath -Force -ErrorAction Stop |
+            Where-Object { $_.Name -eq ".env" -or $_.Name -like ".env.*" } |
+            ForEach-Object { [void]$result.Add($_) }
+        Get-ChildItem -LiteralPath $script:RepoPath -Recurse -Force -ErrorAction Stop |
+            Where-Object {
+                -not $_.PSIsContainer -and
+                -not $_.FullName.StartsWith($script:GitDirPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+                @(".pem", ".key", ".p12", ".pfx") -contains $_.Extension.ToLowerInvariant()
+            } | ForEach-Object { [void]$result.Add($_) }
+        if ([IO.File]::Exists($script:ConfigPath)) {
+            [void]$result.Add((Get-Item -LiteralPath $script:ConfigPath -Force -ErrorAction Stop))
         }
-    $hooks = Join-Path $script:RepoPath ".git\hooks"
-    if (Test-Path -LiteralPath $hooks -PathType Container) {
-        $result += Get-ChildItem -LiteralPath $hooks -File -ErrorAction SilentlyContinue |
-            Where-Object { -not $_.Name.EndsWith(".sample", [StringComparison]::OrdinalIgnoreCase) }
-    }
-    return @($result | Sort-Object FullName -Unique)
+        if ([IO.Directory]::Exists($script:HooksPath)) {
+            Get-ChildItem -LiteralPath $script:HooksPath -Force -ErrorAction Stop |
+                Where-Object { -not $_.PSIsContainer -and
+                    -not $_.Name.EndsWith(".sample", [StringComparison]::Ordinal) } |
+                ForEach-Object { [void]$result.Add($_) }
+        }
+        return @($result | Sort-Object FullName -Unique)
+    } catch { Fail "Unable to enumerate protected files: $($_.Exception.Message)" }
 }
 
 function Get-RelativePath {
     param([string]$FullName)
+    if ($FullName.Equals($script:ConfigPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return ".git/config"
+    }
+    $hookPrefix = $script:HooksPath.TrimEnd("\", "/") + [IO.Path]::DirectorySeparatorChar
+    if ($FullName.StartsWith($hookPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        return ".git/hooks/" + $FullName.Substring($hookPrefix.Length).Replace("\", "/")
+    }
     return $FullName.Substring($script:RepoPath.Length).TrimStart("\", "/").Replace("\", "/")
+}
+
+function Get-ProtectedValue {
+    param($Item)
+    $link = Get-LinkValue $Item
+    if ($null -ne $link) { return $link }
+    try { return (Get-FileHash -LiteralPath $Item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() }
+    catch { Fail "Unable to hash protected file: $($Item.FullName)" }
 }
 
 function Test-Allowed {
     param([string]$Path)
     foreach ($patternGroup in $Allow) {
         foreach ($pattern in ($patternGroup -split ",")) {
-            if ($pattern -and $Path -like $pattern) { return $true }
+            if ($pattern) {
+                $wildcard = New-Object System.Management.Automation.WildcardPattern(
+                    $pattern, [System.Management.Automation.WildcardOptions]::None)
+                if ($wildcard.IsMatch($Path)) { return $true }
+            }
         }
     }
     return $false
@@ -78,56 +134,91 @@ if (($Snapshot -and $Check) -or (-not $Snapshot -and -not $Check)) {
     Fail "Specify exactly one of -Snapshot or -Check."
 }
 if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = (Get-Location).Path }
-try { $script:RepoPath = (Resolve-Path -LiteralPath $Repo -ErrorAction Stop).Path.TrimEnd("\", "/") }
+try { $requested = (Resolve-Path -LiteralPath $Repo -ErrorAction Stop).Path.TrimEnd("\", "/") }
 catch { Fail "Repository directory not found: $Repo" }
-
-& git -C $script:RepoPath rev-parse --is-inside-work-tree *> $null
-if ($LASTEXITCODE -ne 0) { Fail "Not a git repository: $script:RepoPath" }
+$script:RepoPath = $requested
+$root = (Invoke-Git @("rev-parse", "--show-toplevel")) -join "`n"
+try { $script:RepoPath = (Resolve-Path -LiteralPath $root -ErrorAction Stop).Path.TrimEnd("\", "/") }
+catch { Fail "Unable to resolve repository root." }
+if (-not $requested.Equals($script:RepoPath, [StringComparison]::OrdinalIgnoreCase)) {
+    [Console]::Error.WriteLine("Note: repo normalized to $script:RepoPath")
+}
+$script:ConfigPath = ((Invoke-Git @("rev-parse", "--path-format=absolute", "--git-path", "config")) -join "`n")
+$script:HooksPath = ((Invoke-Git @("rev-parse", "--path-format=absolute", "--git-path", "hooks")) -join "`n").TrimEnd("\", "/")
+$gitDir = ((Invoke-Git @("rev-parse", "--path-format=absolute", "--git-dir")) -join "`n").TrimEnd("\", "/")
+$script:GitDirPrefix = $gitDir + [IO.Path]::DirectorySeparatorChar
 
 if ($Snapshot) {
     if ($SnapshotFile) { Fail "-SnapshotFile is only valid with -Check." }
     if (-not $Out) {
-        $Out = Join-Path $env:TEMP ("codex_verify_snap_{0}.txt" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+        $Out = Join-Path $env:TEMP ("codex_verify_snap_{0}_{1:x8}.txt" -f
+            (Get-Date -Format "yyyyMMdd-HHmmss"), (Get-Random))
     }
+    $fullOut = Get-SnapshotFullPath $Out
     $head = (Invoke-Git @("rev-parse", "HEAD")) -join "`n"
     $branch = (Invoke-Git @("branch", "--show-current")) -join "`n"
     $status = (Invoke-Git @("status", "--porcelain=v1", "--untracked-files=all")) -join "`n"
-    $lines = @("format=1", "head=$head", "branch=$(To-Base64 $branch)", "status=$(To-Base64 $status)")
-    foreach ($file in Get-ProtectedFiles) {
-        $relative = Get-RelativePath $file.FullName
-        $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        $lines += "protected=$(To-Base64 $relative):$hash"
+    $stream = $null
+    $writer = $null
+    try {
+        $stream = New-Object IO.FileStream($fullOut, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $writer = New-Object IO.StreamWriter($stream, (New-Object Text.UTF8Encoding($false)))
+        $writer.WriteLine("format=1")
+        $writer.WriteLine("head=$head")
+        $writer.WriteLine("branch=$(To-Base64 $branch)")
+        $writer.WriteLine("status=$(To-Base64 $status)")
+        foreach ($file in Get-ProtectedFiles) {
+            $relative = Get-RelativePath $file.FullName
+            $writer.WriteLine("protected=$(To-Base64 $relative):$(Get-ProtectedValue $file)")
+        }
+    } catch { Fail "Unable to write snapshot: $fullOut" }
+    finally {
+        if ($null -ne $writer) { $writer.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
     }
-    try { [IO.File]::WriteAllLines($Out, $lines, (New-Object Text.UTF8Encoding($false))) }
-    catch { Fail "Unable to write snapshot: $Out" }
-    try { $fullOut = [IO.Path]::GetFullPath($Out) } catch { $fullOut = $Out }
     Write-Output "SNAPSHOT: $fullOut"
     exit 0
 }
 
 if ($Out) { Fail "-Out is only valid with -Snapshot." }
 if (-not $SnapshotFile) { Fail "-Check requires -SnapshotFile." }
-if (-not (Test-Path -LiteralPath $SnapshotFile -PathType Leaf)) {
-    Fail "Snapshot file is not readable: $SnapshotFile"
-}
+$fullSnapshot = Get-SnapshotFullPath $SnapshotFile
+if (-not [IO.File]::Exists($fullSnapshot)) { Fail "Snapshot file is not readable: $fullSnapshot" }
 
 $oldHead = $null
 $oldBranch = $null
 $oldHashes = @{}
+$formatCount = 0
+$headCount = 0
+$branchCount = 0
 try {
-    foreach ($line in [IO.File]::ReadAllLines($SnapshotFile, [Text.Encoding]::UTF8)) {
-        if ($line.StartsWith("head=")) { $oldHead = $line.Substring(5) }
-        elseif ($line.StartsWith("branch=")) { $oldBranch = From-Base64 $line.Substring(7) }
-        elseif ($line.StartsWith("protected=")) {
+    foreach ($line in [IO.File]::ReadAllLines($fullSnapshot, [Text.Encoding]::UTF8)) {
+        if ($line.StartsWith("format=")) {
+            $formatCount++
+            if ($line -ne "format=1") { Fail "Invalid snapshot format." }
+        } elseif ($line.StartsWith("head=")) {
+            $headCount++; $oldHead = $line.Substring(5)
+        } elseif ($line.StartsWith("branch=")) {
+            $branchCount++; $oldBranch = From-Base64 $line.Substring(7)
+        } elseif ($line.StartsWith("protected=")) {
             $entry = $line.Substring(10)
             $separator = $entry.IndexOf(":")
             if ($separator -lt 1) { Fail "Invalid protected entry in snapshot." }
             $path = From-Base64 $entry.Substring(0, $separator)
-            $oldHashes[$path] = $entry.Substring($separator + 1)
+            $value = $entry.Substring($separator + 1)
+            if ($value -notmatch "^[0-9A-Fa-f]{64}$" -and -not $value.StartsWith("symlink:")) {
+                Fail "Invalid protected hash in snapshot."
+            }
+            if ($oldHashes.ContainsKey($path)) { Fail "Duplicate protected path in snapshot." }
+            $oldHashes[$path] = $value
         }
     }
-} catch { Fail "Unable to read snapshot file: $SnapshotFile" }
-if ($null -eq $oldHead -or $null -eq $oldBranch) { Fail "Invalid snapshot file: $SnapshotFile" }
+} catch { Fail "Unable to read snapshot file: $fullSnapshot" }
+if ($formatCount -ne 1 -or $headCount -ne 1 -or $branchCount -ne 1 -or
+    [string]::IsNullOrEmpty($oldHead) -or $null -eq $oldBranch) {
+    Fail "Invalid snapshot file: $fullSnapshot"
+}
 
 $currentHead = (Invoke-Git @("rev-parse", "HEAD")) -join "`n"
 $currentBranch = (Invoke-Git @("branch", "--show-current")) -join "`n"
@@ -144,7 +235,7 @@ if ($oldBranch -ne $currentBranch) {
 $currentHashes = @{}
 foreach ($file in Get-ProtectedFiles) {
     $path = Get-RelativePath $file.FullName
-    $currentHashes[$path] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    $currentHashes[$path] = Get-ProtectedValue $file
 }
 foreach ($path in $oldHashes.Keys) {
     $action = $null
@@ -152,19 +243,13 @@ foreach ($path in $oldHashes.Keys) {
     elseif ($oldHashes[$path] -ne $currentHashes[$path]) { $action = "modified" }
     if ($action) {
         if (Test-Allowed $path) { Write-Output "$AllowedSentinel protected file $action (allowed): $path" }
-        else {
-            Write-Output "$ViolationSentinel protected file ${action}: $path"
-            $violations++
-        }
+        else { Write-Output "$ViolationSentinel protected file ${action}: $path"; $violations++ }
     }
 }
 foreach ($path in $currentHashes.Keys) {
     if ($oldHashes.ContainsKey($path)) { continue }
     if (Test-Allowed $path) { Write-Output "$AllowedSentinel protected file added (allowed): $path" }
-    else {
-        Write-Output "$ViolationSentinel protected file added: $path"
-        $violations++
-    }
+    else { Write-Output "$ViolationSentinel protected file added: $path"; $violations++ }
 }
 
 Write-Output "--- git status --porcelain=v1 --untracked-files=all ---"
@@ -172,4 +257,3 @@ Invoke-Git @("status", "--porcelain=v1", "--untracked-files=all") | ForEach-Obje
 Write-Output "--- git diff HEAD --stat ---"
 Invoke-Git @("diff", "HEAD", "--stat") | ForEach-Object { Write-Output $_ }
 if ($violations -gt 0) { exit 2 }
-exit 0

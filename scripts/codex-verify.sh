@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # codex-verify.sh - Snapshot and verify repository safety invariants.
+# Symlinks are recorded by link target; changes behind the target are not tracked.
 set -euo pipefail
 
 ERROR="[CODEX_VERIFY_ERROR]"
@@ -7,9 +8,7 @@ VIOLATION="[CODEX_VERIFY_VIOLATION]"
 ALLOWED="[CODEX_VERIFY_ALLOWED]"
 
 die() {
-    local message="$*"
-    printf '%s %s\n' "$ERROR" "$message"
-    printf '%s %s\n' "$ERROR" "$message" >&2
+    printf '%s %s\n' "$ERROR" "$*" >&2
     exit 1
 }
 
@@ -17,7 +16,11 @@ b64_encode() { printf '%s' "$1" | base64 | tr -d '\r\n'; }
 b64_decode() { printf '%s' "$1" | base64 --decode; }
 
 hash_file() {
-    if command -v sha256sum >/dev/null 2>&1; then
+    local value
+    if [[ -L "$1" ]]; then
+        value="$(readlink "$1")" || return 1
+        printf 'symlink:%s' "$value"
+    elif command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$1" | awk '{print $1}'
     else
         shasum -a 256 "$1" | awk '{print $1}'
@@ -33,7 +36,6 @@ allows=()
 [[ $# -gt 0 ]] || die "Expected snapshot or check."
 command_name="$1"
 shift
-
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo) [[ $# -ge 2 ]] || die "--repo requires a value."; repo_path="$2"; shift 2 ;;
@@ -48,48 +50,85 @@ done
     die "Unknown subcommand: $command_name"
 [[ -n "$repo_path" ]] || repo_path="$PWD"
 [[ -d "$repo_path" ]] || die "Repository directory not found: $repo_path"
-repo_path="$(cd "$repo_path" && pwd)"
+requested_repo="$(cd "$repo_path" && pwd -P)" || die "Unable to resolve repository path."
+repo_path="$(git -C "$requested_repo" rev-parse --show-toplevel 2>/dev/null)" ||
+    die "Not a git repository: $requested_repo"
+repo_path="$(cd "$repo_path" && pwd -P)" || die "Unable to resolve repository root."
+if [[ "$requested_repo" != "$repo_path" ]]; then
+    printf 'Note: repo normalized to %s\n' "$repo_path" >&2
+fi
 
 git_in_repo() { git -C "$repo_path" "$@"; }
-git_in_repo rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
-    die "Not a git repository: $repo_path"
+config_path="$(git_in_repo rev-parse --path-format=absolute --git-path config 2>/dev/null)" ||
+    die "Unable to resolve git config path."
+hooks_path="$(git_in_repo rev-parse --path-format=absolute --git-path hooks 2>/dev/null)" ||
+    die "Unable to resolve git hooks path."
 
-protected_files() {
-    local file
-    for file in "$repo_path"/.env "$repo_path"/.env.*; do
-        [[ -f "$file" ]] && printf '%s\0' "$file"
-    done
-    while IFS= read -r -d '' file; do
-        printf '%s\0' "$file"
-    done < <(find "$repo_path" -path "$repo_path/.git" -prune -o -type f \
-        \( -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \) -print0)
-    if [[ -d "$repo_path/.git/hooks" ]]; then
-        while IFS= read -r -d '' file; do
-            [[ "$file" == *.sample ]] || printf '%s\0' "$file"
-        done < <(find "$repo_path/.git/hooks" -maxdepth 1 -type f -perm -111 -print0)
+canonical_candidate() {
+    local path="$1" parent
+    parent="$(dirname "$path")"
+    [[ -d "$parent" ]] || die "Snapshot parent directory not found: $parent"
+    parent="$(cd "$parent" && pwd -P)" || die "Unable to resolve snapshot path."
+    printf '%s/%s' "$parent" "$(basename "$path")"
+}
+
+validate_snapshot_path() {
+    local path="$1" full
+    full="$(canonical_candidate "$path")"
+    if [[ "$full" == "$repo_path" || "$full" == "$repo_path/"* ]]; then
+        die "snapshot file must be outside the repository"
     fi
+    [[ ! -L "$path" ]] || die "Snapshot file must not be a symlink."
+    printf '%s' "$full"
 }
 
 relative_path() {
     local path="$1"
-    if [[ "$path" == "$repo_path/.git/"* ]]; then
-        printf '.git/%s' "${path#"$repo_path/.git/"}"
+    if [[ "$path" == "$config_path" ]]; then
+        printf '.git/config'
+    elif [[ "$path" == "$hooks_path/"* ]]; then
+        printf '.git/hooks/%s' "${path#"$hooks_path/"}"
     else
         printf '%s' "${path#"$repo_path/"}"
     fi
 }
 
+enumerate_protected() {
+    local output="$1" file
+    : >"$output" || return 1
+    for file in "$repo_path"/.env "$repo_path"/.env.*; do
+        [[ -e "$file" || -L "$file" ]] && printf '%s\0' "$file" >>"$output"
+    done
+    find "$repo_path" -path "$repo_path/.git" -prune -o \
+        \( -type f -o -type l \) \
+        \( -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \) \
+        -print0 >>"$output" || return 1
+    if [[ -e "$config_path" || -L "$config_path" ]]; then
+        printf '%s\0' "$config_path" >>"$output"
+    fi
+    if [[ -d "$hooks_path" ]]; then
+        find "$hooks_path" -maxdepth 1 \( -type f -o -type l \) ! -name '*.sample' \
+            -print0 >>"$output" || return 1
+    fi
+}
+
+tmp_listing="$(mktemp "${TMPDIR:-/tmp}/codex_verify_files.XXXXXX")" ||
+    die "Unable to create temporary file."
+trap 'rm -f "$tmp_listing"' EXIT
+
 if [[ "$command_name" == "snapshot" ]]; then
     [[ -z "$snapshot_file" ]] || die "--snapshot is only valid with check."
     if [[ -z "$out_file" ]]; then
-        out_file="${TMPDIR:-/tmp}/codex_verify_snap_$(date +%Y%m%d-%H%M%S).txt"
+        out_file="$(mktemp -u "${TMPDIR:-/tmp}/codex_verify_snap_$(date +%Y%m%d-%H%M%S).XXXXXX")"
     fi
-    head_value="$(git_in_repo rev-parse HEAD 2>/dev/null)" ||
-        die "Unable to read HEAD."
-    branch_value="$(git_in_repo branch --show-current 2>/dev/null)" ||
-        die "Unable to read branch."
+    full_out="$(validate_snapshot_path "$out_file")"
+    [[ ! -e "$full_out" ]] || die "Snapshot file already exists: $full_out"
+    enumerate_protected "$tmp_listing" || die "Unable to enumerate protected files."
+    head_value="$(git_in_repo rev-parse HEAD 2>/dev/null)" || die "Unable to read HEAD."
+    branch_value="$(git_in_repo branch --show-current 2>/dev/null)" || die "Unable to read branch."
     status_value="$(git_in_repo status --porcelain=v1 --untracked-files=all 2>/dev/null)" ||
         die "Unable to read git status."
+    set -o noclobber
     {
         printf 'format=1\n'
         printf 'head=%s\n' "$head_value"
@@ -97,35 +136,48 @@ if [[ "$command_name" == "snapshot" ]]; then
         printf 'status=%s\n' "$(b64_encode "$status_value")"
         while IFS= read -r -d '' file; do
             rel="$(relative_path "$file")"
-            printf 'protected=%s:%s\n' "$(b64_encode "$rel")" "$(hash_file "$file")"
-        done < <(protected_files)
-    } >"$out_file" || die "Unable to write snapshot: $out_file"
-    out_file="$(cd "$(dirname "$out_file")" && pwd)/$(basename "$out_file")"
-    printf 'SNAPSHOT: %s\n' "$out_file"
+            digest="$(hash_file "$file")" || die "Unable to hash protected file: $rel"
+            printf 'protected=%s:%s\n' "$(b64_encode "$rel")" "$digest"
+        done <"$tmp_listing"
+    } >"$full_out" || die "Unable to write snapshot: $full_out"
+    set +o noclobber
+    printf 'SNAPSHOT: %s\n' "$full_out"
     exit 0
 fi
 
 [[ -z "$out_file" ]] || die "--out is only valid with snapshot."
 [[ -n "$snapshot_file" ]] || die "check requires --snapshot."
-[[ -r "$snapshot_file" ]] || die "Snapshot file is not readable: $snapshot_file"
+full_snapshot="$(validate_snapshot_path "$snapshot_file")"
+[[ -f "$full_snapshot" && -r "$full_snapshot" ]] ||
+    die "Snapshot file is not readable: $full_snapshot"
 
 old_head=""
 old_branch_b64=""
+format_count=0
+head_count=0
+branch_count=0
 declare -A old_hashes=()
 while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
-        head=*) old_head="${line#head=}" ;;
-        branch=*) old_branch_b64="${line#branch=}" ;;
+        format=*) format_count=$((format_count + 1)); [[ "$line" == "format=1" ]] ||
+            die "Invalid snapshot format." ;;
+        head=*) head_count=$((head_count + 1)); old_head="${line#head=}" ;;
+        branch=*) branch_count=$((branch_count + 1)); old_branch_b64="${line#branch=}" ;;
         protected=*)
             entry="${line#protected=}"
+            [[ "$entry" == *:* ]] || die "Invalid protected entry in snapshot."
             encoded="${entry%%:*}"
-            hash="${entry#*:}"
+            digest="${entry#*:}"
+            [[ "$digest" =~ ^[[:xdigit:]]{64}$ || "$digest" == symlink:* ]] ||
+                die "Invalid protected hash in snapshot."
             path="$(b64_decode "$encoded" 2>/dev/null)" || die "Invalid snapshot protected path."
-            old_hashes["$path"]="$hash"
+            [[ ! -v "old_hashes[$path]" ]] || die "Duplicate protected path in snapshot."
+            old_hashes["$path"]="$digest"
             ;;
     esac
-done <"$snapshot_file"
-[[ -n "$old_head" && -n "$old_branch_b64" ]] || die "Invalid snapshot file: $snapshot_file"
+done <"$full_snapshot" || die "Unable to read snapshot file."
+[[ $format_count -eq 1 && $head_count -eq 1 && $branch_count -eq 1 && -n "$old_head" ]] ||
+    die "Invalid snapshot file: $full_snapshot"
 old_branch="$(b64_decode "$old_branch_b64" 2>/dev/null)" || die "Invalid snapshot branch."
 
 current_head="$(git_in_repo rev-parse HEAD 2>/dev/null)" || die "Unable to read HEAD."
@@ -148,19 +200,18 @@ is_allowed() {
     return 1
 }
 
+enumerate_protected "$tmp_listing" || die "Unable to enumerate protected files."
 declare -A current_hashes=()
 while IFS= read -r -d '' file; do
     rel="$(relative_path "$file")"
-    current_hashes["$rel"]="$(hash_file "$file")"
-done < <(protected_files)
+    digest="$(hash_file "$file")" || die "Unable to hash protected file: $rel"
+    current_hashes["$rel"]="$digest"
+done <"$tmp_listing"
 
 for path in "${!old_hashes[@]}"; do
-    if [[ ! -v "current_hashes[$path]" ]]; then
-        action="deleted"
-    elif [[ "${old_hashes[$path]}" != "${current_hashes[$path]}" ]]; then
-        action="modified"
-    else
-        continue
+    if [[ ! -v "current_hashes[$path]" ]]; then action="deleted"
+    elif [[ "${old_hashes[$path]}" != "${current_hashes[$path]}" ]]; then action="modified"
+    else continue
     fi
     if is_allowed "$path"; then
         printf '%s protected file %s (allowed): %s\n' "$ALLOWED" "$action" "$path"
@@ -184,4 +235,3 @@ git_in_repo status --porcelain=v1 --untracked-files=all || die "Unable to read g
 printf '%s\n' '--- git diff HEAD --stat ---'
 git_in_repo diff HEAD --stat || die "Unable to read git diff."
 [[ "$violations" -eq 0 ]] || exit 2
-exit 0
