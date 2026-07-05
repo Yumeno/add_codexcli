@@ -155,16 +155,35 @@ Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
    `git diff HEAD --stat` の要点のみを提示する。
 7. `.git/`、`.env` など保護対象ファイルが変更されていないか確認する。変更されていたら
    最優先で警告する。
-8. 検収結果をユーザーに報告し、**ロールバック手順を必ず添える**:
+8. 検収結果をユーザーに報告し、**検収結果に応じたロールバック手順を必ず添える**。
+   基本形（unstaged の tracked 変更 + untracked のみの場合）:
    ```
    git checkout -- .
    git clean -fd
    ```
-   ロールバック手順には以下の但し書きを添える:
-   - この手順で戻せるのは **未コミットの tracked / untracked 変更のみ**
-   - Codex がコミットしていた場合（手順 1 の HEAD 不一致で検出）は
-     `git reset --hard <実行前HEAD>` が必要になるが、これは破壊的な操作なので
-     実行せずユーザーの判断を仰ぐ
+   ロールバック手順には以下の但し書き・分岐を添える:
+   - 基本形で戻せるのは **unstaged の tracked 変更 + untracked ファイルのみ**
+   - **staged 変更が検出された場合**（手順 3 で検出）: `git checkout -- .` は index 基準で
+     working tree を戻すため、staged 変更は破棄されない。代わりに以下を案内する
+     （破壊的なのでユーザー判断で実行）:
+     ```
+     git restore --source=<実行前HEAD> --staged --worktree -- .
+     git clean -fd
+     ```
+   - **HEAD のみ不一致（branch は同一）の場合**（手順 1 で検出）: Codex がコミットした
+     可能性がある。`git reset --hard <実行前HEAD>` を候補として提示する
+     （破壊的な操作なので実行せずユーザーの判断を仰ぐ）
+   - **branch も不一致の場合**（手順 2 で検出）: 固定の復旧コマンドを提示しない。
+     `git reset --hard <実行前HEAD>` は **現在チェックアウト中の別 branch を実行前 HEAD に
+     移動させてしまい**、元 branch の復旧にならず別 branch の履歴破壊になり得る。
+     まず以下の状況確認コマンドを提示し、元 branch / 現在の branch / 生成されたコミットを
+     確認してから、ユーザーと個別に復旧方法を判断する:
+     ```
+     git branch --show-current
+     git status
+     git log --oneline --decorate -5
+     git reflog -10
+     ```
    - ignored ファイル（`.env` 等）やリポジトリ外への変更は git では戻せない
 
 ### 6. 結果を表示する
@@ -185,7 +204,8 @@ Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
 
 ### 次のアクション
 - 内容確認後、問題なければコミットしてください
-- やり直す場合: `git checkout -- .` && `git clean -fd`
+- やり直す場合: 検収結果に staged 変更やコミット・branch 切替が含まれるかで手順が
+  変わるため、上記の手順 5.8 のロールバック案内（検収結果に応じて提示したもの）に従ってください
 
 ---
 *via Codex CLI（モデル未指定 / codex のデフォルトに委任）*
