@@ -35,13 +35,23 @@ Claude 自身のトークン消費を Codex にオフロードする目的のス
    汚れている場合は中断し、ユーザーに「未コミットの変更があるため中断しました。
    先にコミット/stash してから再実行してください」と提示する。
    検収時に Codex の変更と既存の変更が区別できなくなることを防ぐための必須ガード。
-3. **実行前スナップショットの記録**: clean tree 確認の直後に以下の 2 コマンドを実行し、
-   その出力（実行前の HEAD コミットハッシュと現在の branch 名）を記録しておく。
-   後の検収（手順 5）で「Codex がコミットや branch 切替をしていないか」を照合するために使う。
+3. **実行前スナップショットの記録**: clean tree 確認の直後に `codex-verify` の
+   snapshot サブコマンドを実行する。HEAD / branch / status / 保護対象ファイル
+   （`.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `.git/config`, `.git/hooks`）の
+   ハッシュがスナップショットファイルに記録され、後の検収（手順 5）の照合に使われる。
+   呼び出しルール（素の 1 コマンド、double quote 等）は手順 3 の許可傘ブロックと同じ。
    ```bash
-   git rev-parse HEAD
-   git branch --show-current
+   powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-verify.ps1" -Snapshot -Repo "C:/path/to/repo"
    ```
+   Linux/Mac native 環境:
+   ```bash
+   bash "$HOME/.claude/scripts/codex-verify.sh" snapshot --repo "/path/to/repo"
+   ```
+   成功時は **出力の最終行に `SNAPSHOT: <path>`** が出る。この `<path>` を記録しておく
+   （手順 5 の check で必須）。行頭 `[CODEX_VERIFY_ERROR]` が出た場合は snapshot 失敗
+   として中断し、原因を報告する。
+   **snapshot と check は同じ実装で揃える**（ps1 で取った snapshot は ps1 の check に、
+   sh で取ったものは sh の check に渡す。既定の出力先パス形式が実装ごとに異なるため）。
 4. リポジトリの絶対パスが **ASCII のみ** であること（日本語などの非 ASCII 文字を含まない）。
    含む場合は中断し、以下を案内する:
    - 回避策: git worktree を ASCII パスに切って、そちらで作業する
@@ -139,23 +149,38 @@ wrapper のエラーとして提示する**。例:
 
 Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
 
-1. `git rev-parse HEAD` を再実行し、**実行前スナップショット（手順 1）の HEAD と一致する
-   ことを確認** する。不一致なら「Codex がコミットまたは履歴操作をした可能性がある」と
-   **最優先で警告** し、`git log --oneline -5` で状況を提示する
-   （HEAD が動いていると、以降の working tree ベースの検収は「無変更」と誤認するため）。
-2. `git branch --show-current` も同様に実行前スナップショットと比較する（branch 切替の検出）。
-3. `git status --porcelain=v1 --untracked-files=all` を実行し、staged / unstaged / untracked の
-   変更を **全て** 確認する。
-4. `git diff HEAD --stat` で staged 込みの変更量を確認する（working tree だけの
-   `git diff --stat` では staged された変更が漏れるため）。
-5. Codex が応答の最後に報告した「変更ファイル一覧」と、git の実態を **照合** する。
-   **不一致なら明示的に警告する**（Codex の報告と実態の不一致の検出のため。例えば git 上は
-   変更されているのに報告に無いファイルがある、逆に報告にあるのに git 上は無変更、など）。
-6. 変更が大きい場合（目安: 10 ファイル超 or 500 行超）は diff 全文を貼らず、
-   `git diff HEAD --stat` の要点のみを提示する。
-7. `.git/`、`.env` など保護対象ファイルが変更されていないか確認する。変更されていたら
-   最優先で警告する。
-8. 検収結果をユーザーに報告し、**検収結果に応じたロールバック手順を必ず添える**。
+1. `codex-verify` の check サブコマンドを、手順 1 で記録した snapshot パスを渡して実行する。
+   HEAD / branch の実行前後比較、保護対象ファイルのハッシュ比較、
+   `git status --porcelain=v1 --untracked-files=all` + `git diff HEAD --stat` のサマリ出力が
+   この 1 コマンドで行われる（呼び出しルールは手順 3 の許可傘ブロックと同じ）:
+   ```bash
+   powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-verify.ps1" -Check -SnapshotFile "<手順1で記録したsnapshotパス>" -Repo "C:/path/to/repo"
+   ```
+   Linux/Mac native 環境:
+   ```bash
+   bash "$HOME/.claude/scripts/codex-verify.sh" check --snapshot "<手順1で記録したsnapshotパス>" --repo "/path/to/repo"
+   ```
+2. check の出力を以下のルールで判定する
+   （tool result は stdout / stderr の混合 stream なので、**どちらに出た行でも判定対象**）:
+   - 行頭 `[CODEX_VERIFY_VIOLATION]` の行があれば = **Codex が禁止操作をした**
+     （コミット・branch 切替・保護対象ファイルの変更等）。**最優先で警告** し、
+     violation の内容に応じたロールバック案内（手順 5.6 の分岐）に進む
+   - 行頭 `[CODEX_VERIFY_ERROR]` の行があれば = **検収自体が失敗**。Codex の作業結果の
+     良否は判定できていないことを明示し、原因を報告する
+   - 行頭 `[CODEX_VERIFY_ALLOWED]` の行は「許可済み変更」の INFO（後述の `-Allow` 使用時のみ
+     出る）。違反ではないが、検収報告に必ず含める
+   - どれも無ければ、出力中の status / diff サマリを使って次の照合に進む
+3. Codex が応答の最後に報告した「変更ファイル一覧」と、check が出力した git の実態を
+   **照合** する。**不一致なら明示的に警告する**（Codex の報告と実態の不一致の検出のため。
+   例えば git 上は変更されているのに報告に無いファイルがある、逆に報告にあるのに git 上は
+   無変更、など）。
+4. 変更が大きい場合（目安: 10 ファイル超 or 500 行超）は diff 全文を貼らず、
+   check が出力する `git diff HEAD --stat` サマリの要点のみを提示する。
+5. 保護対象ファイル（`.env` 等・`.git/config`・`.git/hooks`）の確認は check が自動で行う。
+   check 出力の `[CODEX_VERIFY_VIOLATION]` / `[CODEX_VERIFY_ALLOWED]` 行で結果を確認し、
+   VIOLATION があれば最優先で警告する（手動での再確認は不要だが、VIOLATION/ALLOWED 行を
+   報告から省略しない）。
+6. 検収結果をユーザーに報告し、**検収結果に応じたロールバック手順を必ず添える**。
    基本形（unstaged の tracked 変更 + untracked のみの場合）:
    ```
    git checkout -- .
@@ -163,17 +188,17 @@ Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
    ```
    ロールバック手順には以下の但し書き・分岐を添える:
    - 基本形で戻せるのは **unstaged の tracked 変更 + untracked ファイルのみ**
-   - **staged 変更が検出された場合**（手順 3 で検出）: `git checkout -- .` は index 基準で
-     working tree を戻すため、staged 変更は破棄されない。代わりに以下を案内する
+   - **staged 変更が検出された場合**（check の status サマリで検出）: `git checkout -- .` は
+     index 基準で working tree を戻すため、staged 変更は破棄されない。代わりに以下を案内する
      （破壊的なのでユーザー判断で実行）:
      ```
      git restore --source=<実行前HEAD> --staged --worktree -- .
      git clean -fd
      ```
-   - **HEAD のみ不一致（branch は同一）の場合**（手順 1 で検出）: Codex がコミットした
-     可能性がある。`git reset --hard <実行前HEAD>` を候補として提示する
+   - **HEAD のみ不一致（branch は同一）の場合**（check の VIOLATION で検出）: Codex が
+     コミットした可能性がある。`git reset --hard <実行前HEAD>` を候補として提示する
      （破壊的な操作なので実行せずユーザーの判断を仰ぐ）
-   - **branch も不一致の場合**（手順 2 で検出）: 固定の復旧コマンドを提示しない。
+   - **branch も不一致の場合**（check の VIOLATION で検出）: 固定の復旧コマンドを提示しない。
      `git reset --hard <実行前HEAD>` は **現在チェックアウト中の別 branch を実行前 HEAD に
      移動させてしまい**、元 branch の復旧にならず別 branch の履歴破壊になり得る。
      まず以下の状況確認コマンドを提示し、元 branch / 現在の branch / 生成されたコミットを
@@ -185,6 +210,34 @@ Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
      git reflog -10
      ```
    - ignored ファイル（`.env` 等）やリポジトリ外への変更は git では戻せない
+
+#### 保護対象ファイルの意図的な編集（`-Allow`）
+
+タスク指示が保護対象ファイル（`.env` 等）の編集を **意図的に** 含む場合は、
+**Codex 実行前（手順 2 の前）にユーザーへ明示確認** する。承認された場合のみ、
+手順 5 の check に該当パターンの `-Allow` を付けて実行する:
+
+```bash
+powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-verify.ps1" -Check -SnapshotFile "<snapshotパス>" -Repo "C:/path/to/repo" -Allow .env
+```
+
+（bash 版は `--allow .env`。複数パターンは PowerShell 版 `-Allow p1,p2` / bash 版 `--allow p1 --allow p2`）
+
+この場合、該当ファイルの変更は `[CODEX_VERIFY_VIOLATION]` ではなく
+`[CODEX_VERIFY_ALLOWED]` 行（INFO 扱い、exit code に影響なし）として出力される。
+ALLOWED 行は「ユーザー承認済みの保護対象変更」として検収報告に必ず含める。
+ユーザーの事前承認なしに `-Allow` を付けてはならない。
+
+**`-Allow` のパターンマッチ仕様**:
+- パターンは **リポジトリルートからの相対パス** に対して照合する
+  (例: ルート直下の `.env` は `-Allow .env`、`config/.env` は `-Allow config/.env`)
+- **区切り文字は `/`** (Windows パスの `\` ではない)。両実装で統一
+- **glob マッチ (case-sensitive)**。`*` は path segment 内のみマッチし、`/` は跨がない
+  (例: `-Allow *.env` は直下の `foo.env` にマッチするが、`sub/foo.env` にはマッチしない)
+- **サブディレクトリを含めて許可** したい場合は明示的に列挙する
+  (PowerShell 版なら `-Allow ".env,config/.env"`、bash 版なら `--allow .env --allow config/.env`)
+- **`-Allow *` のような過大パターンを使わない**。承認対象を最小限のパスに絞る
+  (万一の想定外パスの変更が VIOLATION として上がる余地を残す設計思想)
 
 ### 6. 結果を表示する
 
@@ -199,13 +252,14 @@ Codex の応答を鵜呑みにせず、**必ず git で実態を確認する**:
 (Codex の応答)
 
 ### git 検収
-(git diff HEAD --stat の内容)
+(codex-verify check の status / diff サマリ)
+(VIOLATION / ALLOWED 行があればここに明記)
 (照合結果: Codex 報告と git 実態の一致/不一致、HEAD / branch の実行前後比較)
 
 ### 次のアクション
 - 内容確認後、問題なければコミットしてください
 - やり直す場合: 検収結果に staged 変更やコミット・branch 切替が含まれるかで手順が
-  変わるため、上記の手順 5.8 のロールバック案内（検収結果に応じて提示したもの）に従ってください
+  変わるため、上記の手順 5.6 のロールバック案内（検収結果に応じて提示したもの）に従ってください
 
 ---
 *via Codex CLI（モデル未指定 / codex のデフォルトに委任）*
