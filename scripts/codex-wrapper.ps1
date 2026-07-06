@@ -281,11 +281,14 @@ function Stage-Attachments {
         if (-not (Test-Path -LiteralPath $raw -PathType Leaf)) { throw "Attachment not found or not a regular file: $raw" }
         $item = Get-Item -LiteralPath $raw -Force
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Attachment must not be a symlink or reparse point: $raw" }
-        if ($item.Length -eq 0) { throw "Attachment must not be empty: $raw" }
-        $type = Get-ImageType $item.FullName
+        $stagedTmp = Join-Path $script:OwnedMediaDir ("image-{0:d3}.tmp" -f $order)
+        Copy-Item -LiteralPath $item.FullName -Destination $stagedTmp
+        $stagedItem = Get-Item -LiteralPath $stagedTmp -Force
+        if ($stagedItem.Length -eq 0) { throw "Attachment must not be empty: $raw" }
+        $type = Get-ImageType $stagedItem.FullName
         $staged = Join-Path $script:OwnedMediaDir ("image-{0:d3}{1}" -f $order, $type.Extension)
-        Copy-Item -LiteralPath $item.FullName -Destination $staged
-        $entries += [ordered]@{ order=$order; original_name=$item.Name; staged_path=$staged; mime=$type.Mime; bytes=$item.Length; support=$type.Support }
+        Move-Item -LiteralPath $stagedTmp -Destination $staged
+        $entries += [ordered]@{ order=$order; original_name=$item.Name; staged_path=$staged; mime=$type.Mime; bytes=$stagedItem.Length; support=$type.Support }
     }
     $manifestPath = Join-Path $script:OwnedMediaDir "manifest.json"
     [IO.File]::WriteAllText($manifestPath, ($entries | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding($false)))
@@ -298,24 +301,6 @@ function Stage-Attachments {
     return $entries
 }
 
-$attachmentPaths = @($Attachment)
-if ($AttachmentList) {
-    if (-not (Test-Path -LiteralPath $AttachmentList -PathType Leaf)) { Fail 1 "Attachment list not found: $AttachmentList" }
-    $attachmentPaths += @(Get-Content -LiteralPath $AttachmentList -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-}
-try { $mediaEntries = @(Stage-Attachments $attachmentPaths) } catch { Fail 1 $_.Exception.Message }
-
-# Whether the caller supplied any context (via -Context or -ContextFile). We
-# track this as a boolean separate from the string value so that an explicit
-# empty context is preserved (rather than silently re-interpreted as "no
-# context, fall back to argv-only").
-$hasContext = -not [string]::IsNullOrWhiteSpace($Context)
-
-# --- Temp files (placed under the validated ASCII workdir) ---
-$suffix = Get-Random -Minimum 10000 -Maximum 99999
-$outFile = Join-Path $WorkDir "codex_out_${suffix}.txt"
-$errFile = Join-Path $WorkDir "codex_err_${suffix}.txt"
-
 function Cleanup {
     foreach ($f in @($script:outFile, $script:errFile)) {
         if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
@@ -325,6 +310,25 @@ function Cleanup {
         $script:OwnedMediaDir = ""
     }
 }
+
+try {
+    $attachmentPaths = @($Attachment)
+    if ($AttachmentList) {
+        if (-not (Test-Path -LiteralPath $AttachmentList -PathType Leaf)) { Fail 1 "Attachment list not found: $AttachmentList" }
+        $attachmentPaths += @(Get-Content -LiteralPath $AttachmentList -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    try { $mediaEntries = @(Stage-Attachments $attachmentPaths) } catch { Fail 1 $_.Exception.Message }
+
+    # Whether the caller supplied any context (via -Context or -ContextFile). We
+    # track this as a boolean separate from the string value so that an explicit
+    # empty context is preserved (rather than silently re-interpreted as "no
+    # context, fall back to argv-only").
+    $hasContext = -not [string]::IsNullOrWhiteSpace($Context)
+
+    # --- Temp files (placed under the validated ASCII workdir) ---
+    $suffix = Get-Random -Minimum 10000 -Maximum 99999
+    $outFile = Join-Path $WorkDir "codex_out_${suffix}.txt"
+    $errFile = Join-Path $WorkDir "codex_err_${suffix}.txt"
 
 # --- Argv quoting per CommandLineToArgvW rules (issue #11) ---
 # Naive quoting (`replace " with \" then wrap in "`) gets the boundary cases
@@ -512,4 +516,7 @@ if ($codexExit -ne 0) {
     [Console]::Error.WriteLine("Error: Codex CLI exited with non-zero status: $codexExit")
     exit $codexExit
 }
-exit 0
+    exit 0
+} finally {
+    Cleanup
+}

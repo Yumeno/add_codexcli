@@ -25,7 +25,6 @@ function Assert-Sources {
 function Convert-SkillForAntigravity {
     param([string]$Source, [string]$Destination, [string]$InstalledScriptsRoot)
     $content = [IO.File]::ReadAllText($Source, [Text.Encoding]::UTF8)
-    $windowsRoot = $InstalledScriptsRoot -replace '/', '\'
     $posixRoot = $InstalledScriptsRoot -replace '\\', '/'
     $content = $content.Replace('{{SCRIPTS_ROOT}}', $posixRoot)
     [IO.File]::WriteAllText($Destination, $content, (New-Object Text.UTF8Encoding($false)))
@@ -53,12 +52,31 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $stageScripts $name)
     }
     foreach ($name in $ScriptNames) {
-        Copy-Item -LiteralPath (Join-Path $stageScripts $name) -Destination (Join-Path $ScriptsRoot $name) -Force
+        $destination = Join-Path $ScriptsRoot $name
+        $newDestination = "$destination.new"
+        Remove-Item -LiteralPath $newDestination -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath (Join-Path $stageScripts $name) -Destination $newDestination
+        Move-Item -LiteralPath $newDestination -Destination $destination -Force
     }
     foreach ($name in $SkillNames) {
         $destination = Join-Path $DestinationSkillsRoot $name
-        if (Test-Path -LiteralPath $destination) { Remove-Item -LiteralPath $destination -Recurse -Force }
-        Move-Item -LiteralPath (Join-Path $stageSkills $name) -Destination $destination
+        $newDestination = "$destination.new"
+        $oldDestination = "$destination.old"
+        Remove-Item -LiteralPath $newDestination -Recurse -Force -ErrorAction SilentlyContinue
+        Move-Item -LiteralPath (Join-Path $stageSkills $name) -Destination $newDestination
+        if (Test-Path -LiteralPath $destination) {
+            Remove-Item -LiteralPath $oldDestination -Recurse -Force -ErrorAction SilentlyContinue
+            Move-Item -LiteralPath $destination -Destination $oldDestination
+        }
+        try {
+            Move-Item -LiteralPath $newDestination -Destination $destination
+        } catch {
+            if (Test-Path -LiteralPath $oldDestination) {
+                Move-Item -LiteralPath $oldDestination -Destination $destination
+            }
+            throw "Failed to promote new skill: $name"
+        }
+        Remove-Item -LiteralPath $oldDestination -Recurse -Force -ErrorAction SilentlyContinue
     }
 } finally {
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }

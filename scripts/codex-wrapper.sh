@@ -278,8 +278,14 @@ resolve_workdir
 
 if [[ -n "$ATTACHMENT_LIST" ]]; then
     [[ -f "$ATTACHMENT_LIST" ]] || die 1 "Attachment list not found: $ATTACHMENT_LIST"
+    first_line=1
     while IFS= read -r path || [[ -n "$path" ]]; do
-        [[ -n "$path" ]] && ATTACHMENTS+=("$path")
+        path="${path%$'\r'}"
+        if (( first_line )); then
+            path="${path#$'\xEF\xBB\xBF'}"
+            first_line=0
+        fi
+        [[ -n "${path//[[:space:]]/}" ]] && ATTACHMENTS+=("$path")
     done < "$ATTACHMENT_LIST"
 fi
 
@@ -291,22 +297,24 @@ stage_attachments() {
     is_ascii "$media_root" || media_root="/tmp"
     mkdir -p -- "$media_root"
     MEDIA_DIR=$(mktemp -d "$media_root/codex-media.XXXXXX")
-    local order=0 total=0 path header mime ext staged size
+    local order=0 total=0 path header mime ext staged final_staged size
     local json_entries=()
     for path in "${ATTACHMENTS[@]}"; do
         order=$((order + 1))
         [[ -f "$path" && ! -L "$path" ]] || die 1 "Attachment not found, not regular, or symlink: $path"
-        size=$(wc -c < "$path")
+        staged=$(printf '%s/image-%03d.tmp' "$MEDIA_DIR" "$order")
+        cp -- "$path" "$staged"
+        size=$(wc -c < "$staged")
         [[ "$size" -gt 0 ]] || die 1 "Attachment must not be empty: $path"
-        header=$(od -An -tx1 -N8 "$path" | tr -d ' \r\n')
+        header=$(od -An -tx1 -N8 "$staged" | tr -d ' \r\n')
         case "$header" in
             89504e470d0a1a0a*) mime="image/png"; ext=".png" ;;
             ffd8ff*) mime="image/jpeg"; ext=".jpg" ;;
             *) die 1 "Unsupported or unrecognized attachment format: $path (currently allowed: PNG, JPEG)" ;;
         esac
-        staged=$(printf '%s/image-%03d%s' "$MEDIA_DIR" "$order" "$ext")
-        cp -- "$path" "$staged"
-        MEDIA_PATHS+=("$staged")
+        final_staged=$(printf '%s/image-%03d%s' "$MEDIA_DIR" "$order" "$ext")
+        mv -- "$staged" "$final_staged"
+        MEDIA_PATHS+=("$final_staged")
         total=$((total + size))
         local orig_name="${path##*/}"
         if printf '%s' "$orig_name" | LC_ALL=C od -An -tu1 | awk '
@@ -320,10 +328,10 @@ stage_attachments() {
             die 1 "Attachment filename contains control characters: $path"
         fi
         printf 'MEDIA_ITEM: order=%d original_name=%s staged_path=%s mime=%s bytes=%d support=probe-verified\n' \
-            "$order" "$orig_name" "$staged" "$mime" "$size" >&2
+            "$order" "$orig_name" "$final_staged" "$mime" "$size" >&2
         local esc_orig_name="${orig_name//\\/\\\\}"
         esc_orig_name="${esc_orig_name//\"/\\\"}"
-        local esc_staged="${staged//\\/\\\\}"
+        local esc_staged="${final_staged//\\/\\\\}"
         esc_staged="${esc_staged//\"/\\\"}"
 
         json_entries+=( "  {

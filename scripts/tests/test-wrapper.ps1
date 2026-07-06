@@ -423,6 +423,9 @@ while (`$true) {
     `$ms.Write(`$buf, 0, `$n)
 }
 [System.IO.File]::WriteAllBytes(`$stdinPath, `$ms.ToArray())
+if (`$env:CODEX_TEST_REMOVE_SOURCE) {
+    Remove-Item -LiteralPath `$env:CODEX_TEST_REMOVE_SOURCE -Force -ErrorAction SilentlyContinue
+}
 if (`$env:CODEX_TEST_SLEEP_SECONDS) {
     Start-Sleep -Seconds ([int]`$env:CODEX_TEST_SLEEP_SECONDS)
 }
@@ -739,6 +742,83 @@ Test-Case "Multiple PNG/JPEG attachments preserve order and clean staging" {
     } finally {
         Remove-RecordingShim $shim
         Remove-Item $mediaRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case "Attachment list accepts UTF-8 BOM and CRLF" {
+    $shim = New-RecordingShim
+    $root = Join-Path $env:TEMP "codex_media_list_crlf_$(Get-Random)"
+    New-Item -ItemType Directory -Path $root | Out-Null
+    try {
+        $png1 = Join-Path $root "first image.png"
+        $png2 = Join-Path $root "second image.png"
+        $list = Join-Path $root "attachments.txt"
+        [IO.File]::WriteAllBytes($png1, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+        [IO.File]::WriteAllBytes($png2, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+        [IO.File]::WriteAllText($list, "$png1`r`n$png2`r`n", (New-Object Text.UTF8Encoding($true)))
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "inspect", "-AttachmentList", $list)
+        $argv = @(Get-Content $shim.ArgvPath -Encoding UTF8)
+        if ($r.ExitCode -ne 0 -or @($argv | Where-Object { $_ -eq "-i" }).Count -ne 2) { throw $r.Output }
+    } finally {
+        Remove-RecordingShim $shim
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case "Attachment list accepts LF without BOM" {
+    $shim = New-RecordingShim
+    $root = Join-Path $env:TEMP "codex_media_list_lf_$(Get-Random)"
+    New-Item -ItemType Directory -Path $root | Out-Null
+    try {
+        $png1 = Join-Path $root "first.png"
+        $png2 = Join-Path $root "second.png"
+        $list = Join-Path $root "attachments.txt"
+        [IO.File]::WriteAllBytes($png1, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+        [IO.File]::WriteAllBytes($png2, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+        [IO.File]::WriteAllText($list, "$png1`n$png2`n", (New-Object Text.UTF8Encoding($false)))
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "inspect", "-AttachmentList", $list)
+        $argv = @(Get-Content $shim.ArgvPath -Encoding UTF8)
+        if ($r.ExitCode -ne 0 -or @($argv | Where-Object { $_ -eq "-i" }).Count -ne 2) { throw $r.Output }
+    } finally {
+        Remove-RecordingShim $shim
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case "Attachment list ignores whitespace-only lines" {
+    $shim = New-RecordingShim
+    $root = Join-Path $env:TEMP "codex_media_list_space_$(Get-Random)"
+    New-Item -ItemType Directory -Path $root | Out-Null
+    try {
+        $png = Join-Path $root "only.png"
+        $list = Join-Path $root "attachments.txt"
+        [IO.File]::WriteAllBytes($png, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+        [IO.File]::WriteAllText($list, "   `n`t`n$png`n", (New-Object Text.UTF8Encoding($false)))
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "inspect", "-AttachmentList", $list)
+        $argv = @(Get-Content $shim.ArgvPath -Encoding UTF8)
+        if ($r.ExitCode -ne 0 -or @($argv | Where-Object { $_ -eq "-i" }).Count -ne 1) { throw $r.Output }
+    } finally {
+        Remove-RecordingShim $shim
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case "Staged attachment remains valid after source is removed" {
+    $shim = New-RecordingShim
+    $root = Join-Path $env:TEMP "codex_media_source_remove_$(Get-Random)"
+    New-Item -ItemType Directory -Path $root | Out-Null
+    $oldRemoveSource = $env:CODEX_TEST_REMOVE_SOURCE
+    try {
+        $png = Join-Path $root "source.png"
+        [IO.File]::WriteAllBytes($png, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+        $env:CODEX_TEST_REMOVE_SOURCE = $png
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "inspect", "-Attachment", $png)
+        $argv = @(Get-Content $shim.ArgvPath -Encoding UTF8)
+        if ($r.ExitCode -ne 0 -or @($argv | Where-Object { $_ -eq "-i" }).Count -ne 1 -or (Test-Path $png)) { throw $r.Output }
+    } finally {
+        $env:CODEX_TEST_REMOVE_SOURCE = $oldRemoveSource
+        Remove-RecordingShim $shim
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

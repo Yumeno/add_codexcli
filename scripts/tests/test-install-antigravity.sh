@@ -25,7 +25,27 @@ for name in "${script_names[@]}"; do test -f "$scripts_root/$name"; done
 test "$(find "$scripts_root" -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq "${#script_names[@]}"
 test -f "$destination_root/skills/unrelated/keep.txt"
 test ! -e "$destination_root/skills/ask-codex/stale.txt"
+
+printf 'previous\n' > "$destination_root/skills/ask-codex/previous.txt"
+chmod 555 "$destination_root/skills"
+if mkdir "$destination_root/skills/.permission-probe" 2>/dev/null; then
+    rmdir "$destination_root/skills/.permission-probe"
+    printf 'SKIP: read-only destination enforcement is unavailable on this host\n'
+else
+    if bash "$installer" "$destination_root" "$scripts_root" >/dev/null 2>&1; then
+        printf 'Expected installer failure for read-only skills directory\n' >&2
+        exit 1
+    fi
+    test -f "$destination_root/skills/ask-codex/previous.txt"
+fi
+chmod 755 "$destination_root/skills"
+
+mkdir -p -- "$destination_root/skills/ask-codex.new"
+printf 'leftover\n' > "$destination_root/skills/ask-codex.new/leftover.txt"
+printf 'leftover\n' > "$scripts_root/codex-wrapper.sh.new"
 bash "$installer" "$destination_root" "$scripts_root" >/dev/null
 test -z "$(find "$destination_root" -maxdepth 1 -type d -name '.add-codexcli-stage-*' -print -quit)"
+test -z "$(find "$destination_root/skills" -maxdepth 1 \( -name '*.new' -o -name '*.old' \) -print -quit)"
+test -z "$(find "$scripts_root" -maxdepth 1 -name '*.new' -print -quit)"
 
 printf 'PASS: Antigravity CLI installer\n'
