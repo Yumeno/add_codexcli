@@ -49,6 +49,19 @@ try {
         & powershell -ExecutionPolicy Bypass -NoProfile -File $Installer -DestinationRoot $DestinationRoot -ScriptsRoot $ScriptsRoot | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "second install exited with $LASTEXITCODE" }
     }
+    Test-Case "absorbs stale new artifacts" {
+        $staleSkill = Join-Path $DestinationRoot "skills\ask-codex.new"
+        New-Item -ItemType Directory -Force -Path $staleSkill | Out-Null
+        [IO.File]::WriteAllText((Join-Path $staleSkill "leftover.txt"), "leftover")
+        [IO.File]::WriteAllText((Join-Path $ScriptsRoot "codex-wrapper.ps1.new"), "leftover")
+        & powershell -ExecutionPolicy Bypass -NoProfile -File $Installer -DestinationRoot $DestinationRoot -ScriptsRoot $ScriptsRoot | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "install with stale .new exited with $LASTEXITCODE" }
+    }
+    Test-Case "cleans new and old promotion artifacts" {
+        $skillArtifacts = @(Get-ChildItem -LiteralPath (Join-Path $DestinationRoot "skills") -Force | Where-Object { $_.Name -like "*.new" -or $_.Name -like "*.old" })
+        $scriptArtifacts = @(Get-ChildItem -LiteralPath $ScriptsRoot -Force | Where-Object { $_.Name -like "*.new" -or $_.Name -like "*.old" })
+        if ($skillArtifacts.Count -ne 0 -or $scriptArtifacts.Count -ne 0) { throw "promotion artifacts remain" }
+    }
     Test-Case "cleans staging directories" {
         if (Get-ChildItem -LiteralPath $DestinationRoot -Directory -Filter ".add-codexcli-stage-*") { throw "staging directory leaked" }
     }

@@ -389,6 +389,7 @@ rec_codex_setup() {
 # a minimal codex exec: extract -o <file> and write a marker into it.
 printf '%s\n' "\$@" > "$REC_ARGV"
 cat > "$REC_STDIN"
+[[ -z "\${CODEX_TEST_REMOVE_SOURCE:-}" ]] || rm -f -- "\$CODEX_TEST_REMOVE_SOURCE"
 OUTFILE=""
 while [[ \$# -gt 0 ]]; do
     case "\$1" in
@@ -617,6 +618,69 @@ if [[ $CODE -eq 0 && ${#IMAGE_PATHS[@]} -eq 2 \
    && ! -e "${IMAGE_PATHS[0]}" && ! -e "${IMAGE_PATHS[1]}" && $MANIFEST_OK -eq 1 \
    && "$OUTPUT" == *"MEDIA: "*"manifest="* && "$OUTPUT" == *"original_name="*"staged_path="* ]]; then pass
 else fail "exit=$CODE image paths='${IMAGE_PATHS[*]-}' manifest_ok=$MANIFEST_OK output='$OUTPUT' manifest='$(cat "$REC_SHIM_DIR/manifest.json" 2>/dev/null || echo "missing")'"; fi
+rm -rf -- "$MEDIA_TEST_DIR"
+rec_codex_teardown
+
+test_case "Attachment list accepts UTF-8 BOM and CRLF"
+rec_codex_setup
+MEDIA_TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/media_list_crlf_XXXXXX")
+PNG1="$MEDIA_TEST_DIR/first image.png"
+PNG2="$MEDIA_TEST_DIR/second image.png"
+LIST="$MEDIA_TEST_DIR/attachments.txt"
+printf '\211PNG\r\n\032\n' > "$PNG1"
+printf '\211PNG\r\n\032\n' > "$PNG2"
+printf '\357\273\277%s\r\n%s\r\n' "$PNG1" "$PNG2" > "$LIST"
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "inspect" --attachment-list "$LIST" 2>&1)
+CODE=$?
+IMAGE_COUNT=$(grep -c '^-i$' "$REC_ARGV" || true)
+if [[ $CODE -eq 0 && $IMAGE_COUNT -eq 2 ]]; then pass
+else fail "exit=$CODE image_count=$IMAGE_COUNT output='$OUTPUT'"; fi
+rm -rf -- "$MEDIA_TEST_DIR"
+rec_codex_teardown
+
+test_case "Attachment list accepts LF without BOM"
+rec_codex_setup
+MEDIA_TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/media_list_lf_XXXXXX")
+PNG1="$MEDIA_TEST_DIR/first.png"
+PNG2="$MEDIA_TEST_DIR/second.png"
+LIST="$MEDIA_TEST_DIR/attachments.txt"
+printf '\211PNG\r\n\032\n' > "$PNG1"
+printf '\211PNG\r\n\032\n' > "$PNG2"
+printf '%s\n%s\n' "$PNG1" "$PNG2" > "$LIST"
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "inspect" --attachment-list "$LIST" 2>&1)
+CODE=$?
+IMAGE_COUNT=$(grep -c '^-i$' "$REC_ARGV" || true)
+if [[ $CODE -eq 0 && $IMAGE_COUNT -eq 2 ]]; then pass
+else fail "exit=$CODE image_count=$IMAGE_COUNT output='$OUTPUT'"; fi
+rm -rf -- "$MEDIA_TEST_DIR"
+rec_codex_teardown
+
+test_case "Attachment list ignores whitespace-only lines"
+rec_codex_setup
+MEDIA_TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/media_list_space_XXXXXX")
+PNG="$MEDIA_TEST_DIR/only.png"
+LIST="$MEDIA_TEST_DIR/attachments.txt"
+printf '\211PNG\r\n\032\n' > "$PNG"
+printf '   \n\t\n%s\n' "$PNG" > "$LIST"
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL bash "$WRAPPER" --prompt "inspect" --attachment-list "$LIST" 2>&1)
+CODE=$?
+IMAGE_COUNT=$(grep -c '^-i$' "$REC_ARGV" || true)
+if [[ $CODE -eq 0 && $IMAGE_COUNT -eq 1 ]]; then pass
+else fail "exit=$CODE image_count=$IMAGE_COUNT output='$OUTPUT'"; fi
+rm -rf -- "$MEDIA_TEST_DIR"
+rec_codex_teardown
+
+test_case "Staged attachment remains valid after source is removed"
+rec_codex_setup
+MEDIA_TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/media_source_remove_XXXXXX")
+PNG="$MEDIA_TEST_DIR/source.png"
+printf '\211PNG\r\n\032\n' > "$PNG"
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" CODEX_TEST_REMOVE_SOURCE="$PNG" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "inspect" --attachment "$PNG" 2>&1)
+CODE=$?
+IMAGE_COUNT=$(grep -c '^-i$' "$REC_ARGV" || true)
+if [[ $CODE -eq 0 && $IMAGE_COUNT -eq 1 && ! -e "$PNG" ]]; then pass
+else fail "exit=$CODE image_count=$IMAGE_COUNT output='$OUTPUT'"; fi
 rm -rf -- "$MEDIA_TEST_DIR"
 rec_codex_teardown
 
