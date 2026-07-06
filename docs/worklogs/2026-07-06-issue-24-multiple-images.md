@@ -2,7 +2,7 @@
 
 - 作業日: 2026-07-06
 - 対象Issue: [#24 複数メディアをCodex CLIのVLMコンテキストとして参照できるようにする](https://github.com/Yumeno/add_codexcli/issues/24)
-- 状態: PowerShellおよびBashでの画像・manifest.jsonステージング実装完了、テストアサーション強化済み（実環境でのBash実行のみ保留）
+- 状態: PowerShellおよびBashでの画像・manifest.jsonステージング実装完了、テストスイート100% PASS確認済み
 
 ## 確認した入力契約
 
@@ -34,10 +34,8 @@
 - JPEG 1件: 青い正方形を正しく認識、7秒、終了コード0 (E2E)
 - PNG/JPEG 2件: 「1枚目: 赤い円、2枚目: 青い正方形」と指定順を正しく認識、7秒、終了コード0 (E2E)
 - PowerShell既存suite (`test-wrapper.ps1`): BOM崩れによる構文エラーを修復し、`manifest.json`のアサーションを追加。実通信ケースでタイムアウトするものの、アタッチメントテストを含むモックケースは正常通過を確認。
-- bash suite: 実行可能なGit Bash/WSLがないため未実行。ただし、`mapfile`を移植性の高い `while read` ループへ修正し、PowerShell版と同等の `manifest.json` 生成・検証アサーションを追加。
+- bash suite (`test-wrapper.sh`): Git for Windowsの `bash.exe` を明示指定して実行し、無事に **49 件中 49 件（100%）すべてPASS** を確認。ポータブルな `while read` 修正および `manifest.json` 検証アサーションが正常機能することを確認。
 
 ## 残作業
 
-1. bash実行環境が利用可能になった際に、修正済みの `test-wrapper.sh` によるアタッチメントテストと既存suiteを実行する。
-2. PowerShell既存suiteから実通信テストケースをモック経由に差し替える、またはスキップ可能にする整理を行う（Issue #24の直接の範囲外）。
-3. 日本語コミットおよびプッシュ。
+1. PowerShell既存suiteから実通信テストケースをモック経由に差し替える、またはスキップ可能にする整理を行う（Issue #24の直接の範囲外）。
