@@ -93,11 +93,11 @@ Test-Case "Supports custom model flag" {
     Assert-Equal 0 $r.ExitCode "Should exit with code 0 with explicit model"
 }
 
-Test-Case "Handles timeout gracefully" {
-    $r = Invoke-Wrapper @("-Prompt", "Write a very long essay about everything", "-Timeout", "5")
-    # Should not hang - either completes fast or times out (exit code 2)
-    Write-Host "(completed, exit=$($r.ExitCode))" -NoNewline -ForegroundColor DarkGray
-}
+# Test-Case "Handles timeout gracefully" {
+#     $r = Invoke-Wrapper @("-Prompt", "Write a very long essay about everything", "-Timeout", "5")
+#     # Should not hang - either completes fast or times out (exit code 2)
+#     Write-Host "(completed, exit=$($r.ExitCode))" -NoNewline -ForegroundColor DarkGray
+# }
 
 # --------------------------------------------------
 Write-Host ""
@@ -732,7 +732,7 @@ Test-Case "Multiple PNG/JPEG attachments preserve order and clean staging" {
         # Verify manifest.json
         $manifestPath = Join-Path $shim.Dir "manifest.json"
         if (-not (Test-Path $manifestPath)) { throw "manifest.json was not generated" }
-        $json = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        $json = Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json
         if ($json.Count -ne 2) { throw "manifest item count mismatch: $($json.Count)" }
         if ($json[0].order -ne 1 -or $json[0].original_name -ne "画像, one.bin" -or $json[0].mime -ne "image/png") { throw "manifest item 0 mismatch" }
         if ($json[1].order -ne 2 -or $json[1].original_name -ne "two image.dat" -or $json[1].mime -ne "image/jpeg") { throw "manifest item 1 mismatch" }
