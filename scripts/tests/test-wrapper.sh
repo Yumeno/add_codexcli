@@ -614,7 +614,8 @@ fi
 
 if [[ $CODE -eq 0 && ${#IMAGE_PATHS[@]} -eq 2 \
    && "${IMAGE_PATHS[0]}" == *image-001.png && "${IMAGE_PATHS[1]}" == *image-002.jpg \
-   && ! -e "${IMAGE_PATHS[0]}" && ! -e "${IMAGE_PATHS[1]}" && $MANIFEST_OK -eq 1 ]]; then pass
+   && ! -e "${IMAGE_PATHS[0]}" && ! -e "${IMAGE_PATHS[1]}" && $MANIFEST_OK -eq 1 \
+   && "$OUTPUT" == *"MEDIA: "*"manifest="* && "$OUTPUT" == *"original_name="*"staged_path="* ]]; then pass
 else fail "exit=$CODE image paths='${IMAGE_PATHS[*]-}' manifest_ok=$MANIFEST_OK output='$OUTPUT' manifest='$(cat "$REC_SHIM_DIR/manifest.json" 2>/dev/null || echo "missing")'"; fi
 rm -rf -- "$MEDIA_TEST_DIR"
 rec_codex_teardown
@@ -626,6 +627,16 @@ OUTPUT=$(bash "$WRAPPER" --prompt "inspect" --attachment "$BAD_MEDIA" 2>&1)
 CODE=$?
 rm -f -- "$BAD_MEDIA"
 if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -q "Unsupported or unrecognized"; then pass
+else fail "exit=$CODE output='$OUTPUT'"; fi
+
+test_case "Control characters in attachment filename are rejected"
+CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/control_media_XXXXXX")
+CONTROL_MEDIA="$CONTROL_DIR/"$'bad\nname.png'
+printf '\211PNG\r\n\032\n' > "$CONTROL_MEDIA"
+OUTPUT=$(bash "$WRAPPER" --prompt "inspect" --attachment "$CONTROL_MEDIA" 2>&1)
+CODE=$?
+rm -rf -- "$CONTROL_DIR"
+if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -q "control characters"; then pass
 else fail "exit=$CODE output='$OUTPUT'"; fi
 
 # --------------------------------------------------

@@ -287,11 +287,14 @@ function Stage-Attachments {
         Copy-Item -LiteralPath $item.FullName -Destination $staged
         $entries += [ordered]@{ order=$order; original_name=$item.Name; staged_path=$staged; mime=$type.Mime; bytes=$item.Length; support=$type.Support }
     }
-    [IO.File]::WriteAllText((Join-Path $script:OwnedMediaDir "manifest.json"), ($entries | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding($false)))
+    $manifestPath = Join-Path $script:OwnedMediaDir "manifest.json"
+    [IO.File]::WriteAllText($manifestPath, ($entries | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding($false)))
     [long]$total = 0
     foreach ($entry in $entries) { $total += $entry.bytes }
-    [Console]::Error.WriteLine("MEDIA: count=$($entries.Count) bytes=$total")
-    foreach ($entry in $entries) { [Console]::Error.WriteLine("MEDIA_ITEM: order=$($entry.order) mime=$($entry.mime) bytes=$($entry.bytes) support=$($entry.support)") }
+    [Console]::Error.WriteLine("MEDIA: count=$($entries.Count) bytes=$total manifest=$manifestPath")
+    foreach ($entry in $entries) {
+        [Console]::Error.WriteLine("MEDIA_ITEM: order=$($entry.order) original_name=$($entry.original_name) staged_path=$($entry.staged_path) mime=$($entry.mime) bytes=$($entry.bytes) support=$($entry.support)")
+    }
     return $entries
 }
 
@@ -441,7 +444,12 @@ try {
     $exited = $process.WaitForExit($Timeout * 1000)
 
     if (-not $exited) {
-        try { $process.Kill() } catch {}
+        try {
+            & taskkill /PID $process.Id /T /F 2>$null | Out-Null
+            $process.WaitForExit()
+        } catch {
+            try { $process.Kill() } catch {}
+        }
         Cleanup
         Fail 2 "Codex CLI timed out after ${Timeout}s"
     }

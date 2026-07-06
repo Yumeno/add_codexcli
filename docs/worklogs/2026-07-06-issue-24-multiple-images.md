@@ -2,7 +2,7 @@
 
 - 作業日: 2026-07-06
 - 対象Issue: [#24 複数メディアをCodex CLIのVLMコンテキストとして参照できるようにする](https://github.com/Yumeno/add_codexcli/issues/24)
-- 状態: PowerShellおよびBashでの画像・manifest.jsonステージング実装完了、テストスイート100% PASS確認済み
+- 状態: PowerShellおよびBashでの画像・manifest.jsonステージング実装完了、全テストPASS確認済み
 
 ## 確認した入力契約
 
@@ -33,9 +33,8 @@
 - PNG 1件: 赤い円を正しく認識、8.5秒、終了コード0 (E2E)
 - JPEG 1件: 青い正方形を正しく認識、7秒、終了コード0 (E2E)
 - PNG/JPEG 2件: 「1枚目: 赤い円、2枚目: 青い正方形」と指定順を正しく認識、7秒、終了コード0 (E2E)
-- PowerShell既存suite (`test-wrapper.ps1`): BOM崩れによる構文エラーを修復し、`manifest.json`のアサーションを追加。実通信ケースでタイムアウトするものの、アタッチメントテストを含むモックケースは正常通過を確認。
-- bash suite (`test-wrapper.sh`): Git for Windowsの `bash.exe` を明示指定して実行し、無事に **49 件中 49 件（100%）すべてPASS** を確認。ポータブルな `while read` 修正および `manifest.json` 検証アサーションが正常機能することを確認。
+- PowerShell suite (`test-wrapper.ps1`): **45件中45件PASS**。fake Codexによるtimeout、exit 2、error sentinel、attachment staging cleanupを含む。
+- bash suite (`test-wrapper.sh`): Git for Windowsの`bash.exe`を明示指定し、**50件中50件PASS**。manifest検証、制御文字を含むファイル名の拒否を含む。
+- manifest診断: 送信前にmanifest path、元ファイル名、staged path、MIME、byte数、support状態をstderrへ表示する。
 
-## 残作業
-
-1. PowerShell既存suiteから実通信テストケースをモック経由に差し替える、またはスキップ可能にする整理を行う（Issue #24の直接の範囲外）。
+- PowerShell timeout: fake Codexでexit 2、error sentinel、attachment staging cleanupを確認。

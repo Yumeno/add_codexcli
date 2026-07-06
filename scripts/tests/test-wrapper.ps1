@@ -93,12 +93,6 @@ Test-Case "Supports custom model flag" {
     Assert-Equal 0 $r.ExitCode "Should exit with code 0 with explicit model"
 }
 
-# Test-Case "Handles timeout gracefully" {
-#     $r = Invoke-Wrapper @("-Prompt", "Write a very long essay about everything", "-Timeout", "5")
-#     # Should not hang - either completes fast or times out (exit code 2)
-#     Write-Host "(completed, exit=$($r.ExitCode))" -NoNewline -ForegroundColor DarkGray
-# }
-
 # --------------------------------------------------
 Write-Host ""
 Write-Host "[Group 3: Output Handling]" -ForegroundColor Yellow
@@ -429,6 +423,9 @@ while (`$true) {
     `$ms.Write(`$buf, 0, `$n)
 }
 [System.IO.File]::WriteAllBytes(`$stdinPath, `$ms.ToArray())
+if (`$env:CODEX_TEST_SLEEP_SECONDS) {
+    Start-Sleep -Seconds ([int]`$env:CODEX_TEST_SLEEP_SECONDS)
+}
 # Extract -o <file> from argv and write a marker so the wrapper doesn't treat
 # the run as empty-output failure.
 `$outFile = `$null
@@ -722,6 +719,9 @@ Test-Case "Multiple PNG/JPEG attachments preserve order and clean staging" {
         [IO.File]::WriteAllLines($list, [string[]]@($png,$jpg), (New-Object Text.UTF8Encoding($false)))
         $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "inspect", "-AttachmentList", $list)
         if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+        if ($r.Output -notmatch 'MEDIA:.*manifest=' -or $r.Output -notmatch 'MEDIA_ITEM:.*original_name=.*staged_path=') {
+            throw "media diagnostics are incomplete: $($r.Output)"
+        }
         $argv = @(Get-Content $shim.ArgvPath -Encoding UTF8)
         $imageIndexes = @(0..($argv.Count - 1) | Where-Object { $argv[$_] -eq "-i" })
         if ($imageIndexes.Count -ne 2) { throw "expected two -i flags: $($argv -join '|')" }
@@ -749,6 +749,32 @@ Test-Case "Unknown attachment format is rejected" {
         $r = Invoke-Wrapper @("-Prompt", "inspect", "-Attachment", $bad)
         if ($r.ExitCode -eq 0 -or $r.Output -notmatch "Unsupported or unrecognized") { throw $r.Output }
     } finally { Remove-Item $bad -Force -ErrorAction SilentlyContinue }
+}
+
+Test-Case "Timeout returns exit 2 and cleans attachment staging" {
+    $shim = New-RecordingShim
+    $root = Join-Path $env:TEMP "codex_media_timeout_$(Get-Random)"
+    New-Item -ItemType Directory -Path $root | Out-Null
+    $png = Join-Path $root "timeout.png"
+    [IO.File]::WriteAllBytes($png, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+    $oldTemp = $env:CODEX_WRAPPER_TEMP
+    $oldSleep = $env:CODEX_TEST_SLEEP_SECONDS
+    try {
+        $env:CODEX_WRAPPER_TEMP = $root
+        $env:CODEX_TEST_SLEEP_SECONDS = "30"
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "timeout", "-Attachment", $png, "-Timeout", "1")
+        if ($r.ExitCode -ne 2 -or $r.Output -notmatch "timed out") {
+            throw "expected timeout exit 2: exit=$($r.ExitCode) output=$($r.Output)"
+        }
+        if (Get-ChildItem -LiteralPath $root -Directory -Filter "codex-media-*") {
+            throw "attachment staging leaked after timeout"
+        }
+    } finally {
+        $env:CODEX_WRAPPER_TEMP = $oldTemp
+        $env:CODEX_TEST_SLEEP_SECONDS = $oldSleep
+        Remove-RecordingShim $shim
+        Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # --------------------------------------------------

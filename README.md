@@ -264,6 +264,8 @@ PowerShellの`-Attachment`は単一画像用です。複数画像は`-Attachment
 `-AttachmentList` / `--attachment-list`では、UTF-8のpath一覧を1行1件で指定できます。
 wrapperはmagic bytesを確認し、ASCII一時領域へ`image-001.png`のような安全な名前でcopyしてから
 指定順に送信します。一時copyは成功・失敗・timeout時に削除され、元ファイルは変更しません。
+送信前にstderrへ件数、総byte数、manifest pathと各画像の順序・元ファイル名・staged path・
+MIME・サポート状態を表示します。
 
 | 形式 | 状態 |
 |---|---|

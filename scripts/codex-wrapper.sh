@@ -308,10 +308,19 @@ stage_attachments() {
         cp -- "$path" "$staged"
         MEDIA_PATHS+=("$staged")
         total=$((total + size))
-        printf 'MEDIA_ITEM: order=%d mime=%s bytes=%d support=probe-verified\n' "$order" "$mime" "$size" >&2
-
-        local orig_name
-        orig_name=$(basename -- "$path")
+        local orig_name="${path##*/}"
+        if printf '%s' "$orig_name" | LC_ALL=C od -An -tu1 | awk '
+            {
+                for (i = 1; i <= NF; i++) {
+                    if ($i < 32 || $i == 127) found = 1
+                }
+            }
+            END { exit(found ? 0 : 1) }
+        '; then
+            die 1 "Attachment filename contains control characters: $path"
+        fi
+        printf 'MEDIA_ITEM: order=%d original_name=%s staged_path=%s mime=%s bytes=%d support=probe-verified\n' \
+            "$order" "$orig_name" "$staged" "$mime" "$size" >&2
         local esc_orig_name="${orig_name//\\/\\\\}"
         esc_orig_name="${esc_orig_name//\"/\\\"}"
         local esc_staged="${staged//\\/\\\\}"
@@ -338,7 +347,7 @@ stage_attachments() {
             echo "]"
         } > "$MEDIA_DIR/manifest.json"
     fi
-    printf 'MEDIA: count=%d bytes=%d\n' "${#MEDIA_PATHS[@]}" "$total" >&2
+    printf 'MEDIA: count=%d bytes=%d manifest=%s\n' "${#MEDIA_PATHS[@]}" "$total" "$MEDIA_DIR/manifest.json" >&2
 }
 
 # --- Temp files (placed under the validated ASCII workdir) ---
