@@ -393,6 +393,11 @@ OUTFILE=""
 while [[ \$# -gt 0 ]]; do
     case "\$1" in
         -o) OUTFILE="\$2"; shift 2 ;;
+        -i)
+            if [[ -f "\$(dirname "\$2")/manifest.json" ]]; then
+                cp "\$(dirname "\$2")/manifest.json" "$REC_SHIM_DIR/manifest.json"
+            fi
+            shift 2 ;;
         *)  shift ;;
     esac
 done
@@ -578,6 +583,50 @@ CODE=$?
 rec_codex_teardown
 if [[ $CODE -eq 0 ]] && ! echo "$OUTPUT" | grep -qE "$SENTINEL"; then pass
 else fail "exit=$CODE stdout='$OUTPUT' (sentinel must be absent on success)"; fi
+
+test_case "Multiple PNG/JPEG attachments preserve order and clean staging"
+rec_codex_setup
+MEDIA_TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/media_test_XXXXXX")
+PNG="$MEDIA_TEST_DIR/first image,ja.bin"
+JPG="$MEDIA_TEST_DIR/second image.dat"
+printf '\211PNG\r\n\032\n' > "$PNG"
+printf '\377\330\377\340' > "$JPG"
+OUTPUT=$(PATH="$REC_SHIM_DIR:$PATH" env -u CODEX_WRAPPER_MODEL \
+    bash "$WRAPPER" --prompt "inspect" --attachment "$PNG" --attachment "$JPG" 2>&1)
+CODE=$?
+IMAGE_PATHS=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" ]] && IMAGE_PATHS+=("$line")
+done < <(awk 'previous=="-i" { print; previous=""; next } { previous=$0 }' "$REC_ARGV")
+
+# Check manifest.json contents
+MANIFEST_OK=0
+if [[ -f "$REC_SHIM_DIR/manifest.json" ]]; then
+    if grep -q '"order": 1' "$REC_SHIM_DIR/manifest.json" && \
+       grep -q '"original_name": "first image,ja.bin"' "$REC_SHIM_DIR/manifest.json" && \
+       grep -q '"mime": "image/png"' "$REC_SHIM_DIR/manifest.json" && \
+       grep -q '"order": 2' "$REC_SHIM_DIR/manifest.json" && \
+       grep -q '"original_name": "second image.dat"' "$REC_SHIM_DIR/manifest.json" && \
+       grep -q '"mime": "image/jpeg"' "$REC_SHIM_DIR/manifest.json"; then
+        MANIFEST_OK=1
+    fi
+fi
+
+if [[ $CODE -eq 0 && ${#IMAGE_PATHS[@]} -eq 2 \
+   && "${IMAGE_PATHS[0]}" == *image-001.png && "${IMAGE_PATHS[1]}" == *image-002.jpg \
+   && ! -e "${IMAGE_PATHS[0]}" && ! -e "${IMAGE_PATHS[1]}" && $MANIFEST_OK -eq 1 ]]; then pass
+else fail "exit=$CODE image paths='${IMAGE_PATHS[*]-}' manifest_ok=$MANIFEST_OK output='$OUTPUT' manifest='$(cat "$REC_SHIM_DIR/manifest.json" 2>/dev/null || echo "missing")'"; fi
+rm -rf -- "$MEDIA_TEST_DIR"
+rec_codex_teardown
+
+test_case "Unknown attachment format is rejected"
+BAD_MEDIA=$(mktemp "${TMPDIR:-/tmp}/bad_media_XXXXXX.txt")
+printf 'not an image' > "$BAD_MEDIA"
+OUTPUT=$(bash "$WRAPPER" --prompt "inspect" --attachment "$BAD_MEDIA" 2>&1)
+CODE=$?
+rm -f -- "$BAD_MEDIA"
+if [[ $CODE -ne 0 ]] && echo "$OUTPUT" | grep -q "Unsupported or unrecognized"; then pass
+else fail "exit=$CODE output='$OUTPUT'"; fi
 
 # --------------------------------------------------
 echo ""

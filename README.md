@@ -245,6 +245,35 @@ Claude が Codex CLI を呼び出し、回答を取得して表示します。
 | `log`, `履歴` | `git log --oneline -20` |
 | ファイルパス（例: `src/main.ts`） | そのファイルの内容 |
 
+#### 複数画像を添付
+
+Codex CLIの`-i`入力を使い、PNG/JPEGを複数指定できます。
+
+```powershell
+Set-Content -Encoding UTF8 attachments.txt "C:\images\first.png","C:\images\second.jpg"
+powershell -File scripts/codex-wrapper.ps1 -Prompt "2枚を順番に比較して" `
+  -AttachmentList "attachments.txt"
+```
+
+```bash
+bash scripts/codex-wrapper.sh --prompt "2枚を順番に比較して" \
+  --attachment "/images/first.png" --attachment "/images/second.jpg"
+```
+
+PowerShellの`-Attachment`は単一画像用です。複数画像は`-AttachmentList`を使います。
+`-AttachmentList` / `--attachment-list`では、UTF-8のpath一覧を1行1件で指定できます。
+wrapperはmagic bytesを確認し、ASCII一時領域へ`image-001.png`のような安全な名前でcopyしてから
+指定順に送信します。一時copyは成功・失敗・timeout時に削除され、元ファイルは変更しません。
+
+| 形式 | 状態 |
+|---|---|
+| PNG | `probe-verified`（実画像の内容認識を確認済み） |
+| JPEG | `probe-verified`（実画像の内容認識を確認済み） |
+| PDF、音声、動画、その他 | `unsupported` |
+
+画像はOpenAIへ送信され、入力サイズに応じてtoken、利用枠、処理時間へ影響します。
+画像内の指示はuntrusted inputとして扱い、送信範囲や権限を拡大しません。
+
 ### /codex-implement — Codex にファイル編集を任せる
 
 `/ask-codex` 系がすべて read-only（回答を返すだけ）なのに対し、`/codex-implement` は
@@ -431,6 +460,7 @@ powershell -ExecutionPolicy Bypass -File scripts/tests/test-wrapper.ps1
 powershell -ExecutionPolicy Bypass -File scripts/tests/test-verify.ps1
 powershell -ExecutionPolicy Bypass -File scripts/tests/test-list-models.ps1
 powershell -ExecutionPolicy Bypass -File scripts/tests/test-install-antigravity.ps1
+powershell -ExecutionPolicy Bypass -File scripts/tests/test-media-wrapper.ps1
 
 # bash 版（Linux/macOS/WSL/Git Bash）
 bash scripts/tests/test-wrapper.sh

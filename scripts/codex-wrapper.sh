@@ -44,6 +44,8 @@ WORKDIR=""
 CONTEXT=""
 CONTEXT_FILE=""
 HAS_CONTEXT=0
+ATTACHMENTS=()
+ATTACHMENT_LIST=""
 SANDBOX="read-only"
 SET_MODEL=""
 SHOW_MODEL=""
@@ -105,6 +107,8 @@ while [[ $# -gt 0 ]]; do
         --cd|--workdir) require_value "$1" "$(( $# - 1 ))" "${2:-}"; WORKDIR="$2"; shift 2 ;;
         --context)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT="$2"; HAS_CONTEXT=1; shift 2 ;;
         --context-file) require_value "$1" "$(( $# - 1 ))" "${2:-}"; CONTEXT_FILE="$2"; shift 2 ;;
+        --attachment)   require_value "$1" "$(( $# - 1 ))" "${2:-}"; ATTACHMENTS+=("$2"); shift 2 ;;
+        --attachment-list) require_value "$1" "$(( $# - 1 ))" "${2:-}"; ATTACHMENT_LIST="$2"; shift 2 ;;
         --sandbox)      require_value "$1" "$(( $# - 1 ))" "${2:-}"; SANDBOX="$2"; shift 2 ;;
         --set-model)    require_value "$1" "$(( $# - 1 ))" "${2:-}"; SET_MODEL="$2"; shift 2 ;;
         --show-model)   SHOW_MODEL=1; shift ;;
@@ -272,14 +276,81 @@ resolve_workdir() {
 }
 resolve_workdir
 
+if [[ -n "$ATTACHMENT_LIST" ]]; then
+    [[ -f "$ATTACHMENT_LIST" ]] || die 1 "Attachment list not found: $ATTACHMENT_LIST"
+    while IFS= read -r path || [[ -n "$path" ]]; do
+        [[ -n "$path" ]] && ATTACHMENTS+=("$path")
+    done < "$ATTACHMENT_LIST"
+fi
+
+MEDIA_DIR=""
+MEDIA_PATHS=()
+stage_attachments() {
+    [[ ${#ATTACHMENTS[@]} -gt 0 ]] || return 0
+    local media_root="${CODEX_WRAPPER_TEMP:-${TMPDIR:-/tmp}}"
+    is_ascii "$media_root" || media_root="/tmp"
+    mkdir -p -- "$media_root"
+    MEDIA_DIR=$(mktemp -d "$media_root/codex-media.XXXXXX")
+    local order=0 total=0 path header mime ext staged size
+    local json_entries=()
+    for path in "${ATTACHMENTS[@]}"; do
+        order=$((order + 1))
+        [[ -f "$path" && ! -L "$path" ]] || die 1 "Attachment not found, not regular, or symlink: $path"
+        size=$(wc -c < "$path")
+        [[ "$size" -gt 0 ]] || die 1 "Attachment must not be empty: $path"
+        header=$(od -An -tx1 -N8 "$path" | tr -d ' \r\n')
+        case "$header" in
+            89504e470d0a1a0a*) mime="image/png"; ext=".png" ;;
+            ffd8ff*) mime="image/jpeg"; ext=".jpg" ;;
+            *) die 1 "Unsupported or unrecognized attachment format: $path (currently allowed: PNG, JPEG)" ;;
+        esac
+        staged=$(printf '%s/image-%03d%s' "$MEDIA_DIR" "$order" "$ext")
+        cp -- "$path" "$staged"
+        MEDIA_PATHS+=("$staged")
+        total=$((total + size))
+        printf 'MEDIA_ITEM: order=%d mime=%s bytes=%d support=probe-verified\n' "$order" "$mime" "$size" >&2
+
+        local orig_name
+        orig_name=$(basename -- "$path")
+        local esc_orig_name="${orig_name//\\/\\\\}"
+        esc_orig_name="${esc_orig_name//\"/\\\"}"
+        local esc_staged="${staged//\\/\\\\}"
+        esc_staged="${esc_staged//\"/\\\"}"
+
+        json_entries+=( "  {
+    \"order\": $order,
+    \"original_name\": \"$esc_orig_name\",
+    \"staged_path\": \"$esc_staged\",
+    \"mime\": \"$mime\",
+    \"bytes\": $size,
+    \"support\": \"probe-verified\"
+  }" )
+    done
+    if [[ ${#json_entries[@]} -gt 0 ]]; then
+        {
+            echo "["
+            for ((i=0; i<${#json_entries[@]}; i++)); do
+                if ((i > 0)); then
+                    echo ","
+                fi
+                echo "${json_entries[i]}"
+            done
+            echo "]"
+        } > "$MEDIA_DIR/manifest.json"
+    fi
+    printf 'MEDIA: count=%d bytes=%d\n' "${#MEDIA_PATHS[@]}" "$total" >&2
+}
+
 # --- Temp files (placed under the validated ASCII workdir) ---
 OUT_FILE=$(mktemp "$WORKDIR/codex_out_XXXXXX.txt")
 ERR_FILE=$(mktemp "$WORKDIR/codex_err_XXXXXX.txt")
 
 cleanup() {
     rm -f "$OUT_FILE" "$ERR_FILE"
+    [[ -z "$MEDIA_DIR" || ! -d "$MEDIA_DIR" ]] || rm -rf -- "$MEDIA_DIR"
 }
 trap cleanup EXIT
+stage_attachments
 
 # --- Build codex command ---
 # Context (if any) is streamed via stdin so it does not hit argv length limits
@@ -301,6 +372,9 @@ if [[ -n "$MODEL" ]]; then
     # cannot know which model codex itself picked.
     echo "MODEL: $MODEL" >&2
 fi
+for image in "${MEDIA_PATHS[@]}"; do
+    CODEX_ARGS+=(-i "$image")
+done
 
 # `--` separates options from the prompt positional. We keep it even though
 # require_value allows --*-leading values, because codex's own argv parser

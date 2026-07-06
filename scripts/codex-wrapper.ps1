@@ -27,6 +27,8 @@ param(
     [string]$Cd = "",
     [string]$Context = "",
     [string]$ContextFile = "",
+    [string[]]$Attachment = @(),
+    [string]$AttachmentList = "",
     # NOTE: deliberately no [ValidateSet] here. PS's own ValidateSet rejection
     # happens before the script body runs, so we cannot route it through Fail
     # and the sentinel is never emitted. We validate manually below instead.
@@ -48,11 +50,16 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 # invocation under Claude Code's permit umbrella) can still detect failure
 # from the stdout stream alone. See issue #19 review feedback / issue #20.
 $ErrorSentinel = "[CODEX_WRAPPER_ERROR]"
+$OwnedMediaDir = ""
 
 # Fail <code> <message>
 # Emits "<sentinel> <message>" to stdout, the same message to stderr, exits.
 function Fail {
     param([int]$Code, [string]$Message)
+    if ($script:OwnedMediaDir -and (Test-Path -LiteralPath $script:OwnedMediaDir)) {
+        Remove-Item -LiteralPath $script:OwnedMediaDir -Recurse -Force -ErrorAction SilentlyContinue
+        $script:OwnedMediaDir = ""
+    }
     Write-Output ("{0} {1}" -f $ErrorSentinel, $Message)
     [Console]::Error.WriteLine("Error: $Message")
     exit $Code
@@ -240,6 +247,61 @@ function Resolve-AsciiWorkDir {
 }
 $WorkDir = Resolve-AsciiWorkDir
 
+function Get-ImageType {
+    param([string]$Path)
+    $bytes = New-Object byte[] 8
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { $count = $stream.Read($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+    if ($count -ge 8 -and
+        $bytes[0] -eq 0x89 -and $bytes[1] -eq 0x50 -and $bytes[2] -eq 0x4E -and $bytes[3] -eq 0x47 -and
+        $bytes[4] -eq 0x0D -and $bytes[5] -eq 0x0A -and $bytes[6] -eq 0x1A -and $bytes[7] -eq 0x0A) {
+        return @{ Mime = "image/png"; Extension = ".png"; Support = "probe-verified" }
+    }
+    if ($count -ge 3 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xD8 -and $bytes[2] -eq 0xFF) {
+        return @{ Mime = "image/jpeg"; Extension = ".jpg"; Support = "probe-verified" }
+    }
+    throw "Unsupported or unrecognized attachment format: $Path (currently allowed: PNG, JPEG)"
+}
+
+function Stage-Attachments {
+    param([string[]]$Paths)
+    if (-not $Paths -or $Paths.Count -eq 0) { return @() }
+    $mediaRoot = if ($env:CODEX_WRAPPER_TEMP -and (Test-IsAscii $env:CODEX_WRAPPER_TEMP)) {
+        $env:CODEX_WRAPPER_TEMP
+    } elseif ($env:TEMP -and (Test-IsAscii $env:TEMP)) {
+        $env:TEMP
+    } else { "C:\tmp" }
+    [IO.Directory]::CreateDirectory($mediaRoot) | Out-Null
+    $script:OwnedMediaDir = Join-Path $mediaRoot ("codex-media-" + [guid]::NewGuid().ToString("N"))
+    [IO.Directory]::CreateDirectory($script:OwnedMediaDir) | Out-Null
+    $entries = @()
+    $order = 0
+    foreach ($raw in $Paths) {
+        $order++
+        if (-not (Test-Path -LiteralPath $raw -PathType Leaf)) { throw "Attachment not found or not a regular file: $raw" }
+        $item = Get-Item -LiteralPath $raw -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Attachment must not be a symlink or reparse point: $raw" }
+        if ($item.Length -eq 0) { throw "Attachment must not be empty: $raw" }
+        $type = Get-ImageType $item.FullName
+        $staged = Join-Path $script:OwnedMediaDir ("image-{0:d3}{1}" -f $order, $type.Extension)
+        Copy-Item -LiteralPath $item.FullName -Destination $staged
+        $entries += [ordered]@{ order=$order; original_name=$item.Name; staged_path=$staged; mime=$type.Mime; bytes=$item.Length; support=$type.Support }
+    }
+    [IO.File]::WriteAllText((Join-Path $script:OwnedMediaDir "manifest.json"), ($entries | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding($false)))
+    [long]$total = 0
+    foreach ($entry in $entries) { $total += $entry.bytes }
+    [Console]::Error.WriteLine("MEDIA: count=$($entries.Count) bytes=$total")
+    foreach ($entry in $entries) { [Console]::Error.WriteLine("MEDIA_ITEM: order=$($entry.order) mime=$($entry.mime) bytes=$($entry.bytes) support=$($entry.support)") }
+    return $entries
+}
+
+$attachmentPaths = @($Attachment)
+if ($AttachmentList) {
+    if (-not (Test-Path -LiteralPath $AttachmentList -PathType Leaf)) { Fail 1 "Attachment list not found: $AttachmentList" }
+    $attachmentPaths += @(Get-Content -LiteralPath $AttachmentList -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+try { $mediaEntries = @(Stage-Attachments $attachmentPaths) } catch { Fail 1 $_.Exception.Message }
+
 # Whether the caller supplied any context (via -Context or -ContextFile). We
 # track this as a boolean separate from the string value so that an explicit
 # empty context is preserved (rather than silently re-interpreted as "no
@@ -254,6 +316,10 @@ $errFile = Join-Path $WorkDir "codex_err_${suffix}.txt"
 function Cleanup {
     foreach ($f in @($script:outFile, $script:errFile)) {
         if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue }
+    }
+    if ($script:OwnedMediaDir -and (Test-Path -LiteralPath $script:OwnedMediaDir)) {
+        Remove-Item -LiteralPath $script:OwnedMediaDir -Recurse -Force -ErrorAction SilentlyContinue
+        $script:OwnedMediaDir = ""
     }
 }
 
@@ -320,6 +386,9 @@ try {
         # (cli / env / config); when nothing resolved we stay silent because we
         # cannot know which model codex itself picked.
         [Console]::Error.WriteLine("MODEL: $Model")
+    }
+    foreach ($entry in $mediaEntries) {
+        $codexArgs += @("-i", $entry.staged_path)
     }
 
     # Prompt goes as the positional argument after `--`. Context (if any) is

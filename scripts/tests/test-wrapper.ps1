@@ -433,7 +433,13 @@ while (`$true) {
 # the run as empty-output failure.
 `$outFile = `$null
 for (`$i = 0; `$i -lt `$args.Count; `$i++) {
-    if (`$args[`$i] -eq '-o' -and `$i + 1 -lt `$args.Count) { `$outFile = `$args[`$i + 1]; break }
+    if (`$args[`$i] -eq '-o' -and `$i + 1 -lt `$args.Count) { `$outFile = `$args[`$i + 1] }
+    if (`$args[`$i] -eq '-i' -and `$i + 1 -lt `$args.Count) {
+        `$parent = Split-Path `$args[`$i + 1] -Parent
+        if (Test-Path (Join-Path `$parent "manifest.json")) {
+            Copy-Item (Join-Path `$parent "manifest.json") (Join-Path '$dir' "manifest.json") -ErrorAction SilentlyContinue
+        }
+    }
 }
 if (`$outFile) { Set-Content -Path `$outFile -Value 'rec codex output' -Encoding UTF8 }
 exit 0
@@ -698,6 +704,51 @@ Test-Case "Sentinel: success path does NOT contain sentinel" {
             throw "stdout unexpectedly contained sentinel on success path. Output: $($r.Output)"
         }
     } finally { Remove-RecordingShim $shim }
+}
+
+Write-Host ""
+Write-Host "[Group 4h: Image attachments]" -ForegroundColor Yellow
+
+Test-Case "Multiple PNG/JPEG attachments preserve order and clean staging" {
+    $shim = New-RecordingShim
+    $mediaRoot = Join-Path $env:TEMP "codex_media_test_$(Get-Random)"
+    New-Item -ItemType Directory -Path $mediaRoot | Out-Null
+    $png = Join-Path $mediaRoot "画像, one.bin"
+    $jpg = Join-Path $mediaRoot "two image.dat"
+    [IO.File]::WriteAllBytes($png, [byte[]](0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a))
+    [IO.File]::WriteAllBytes($jpg, [byte[]](0xff,0xd8,0xff,0xe0))
+    try {
+        $list = Join-Path $mediaRoot "attachments.txt"
+        [IO.File]::WriteAllLines($list, [string[]]@($png,$jpg), (New-Object Text.UTF8Encoding($false)))
+        $r = Invoke-WrapperWithShim -Shim $shim -Arguments @("-Prompt", "inspect", "-AttachmentList", $list)
+        if ($r.ExitCode -ne 0) { throw "wrapper exited $($r.ExitCode): $($r.Output)" }
+        $argv = @(Get-Content $shim.ArgvPath -Encoding UTF8)
+        $imageIndexes = @(0..($argv.Count - 1) | Where-Object { $argv[$_] -eq "-i" })
+        if ($imageIndexes.Count -ne 2) { throw "expected two -i flags: $($argv -join '|')" }
+        $first = $argv[$imageIndexes[0] + 1]; $second = $argv[$imageIndexes[1] + 1]
+        if (-not $first.EndsWith("image-001.png") -or -not $second.EndsWith("image-002.jpg")) { throw "order/type mismatch: $first $second" }
+        if ((Test-Path $first) -or (Test-Path $second)) { throw "staging leaked" }
+
+        # Verify manifest.json
+        $manifestPath = Join-Path $shim.Dir "manifest.json"
+        if (-not (Test-Path $manifestPath)) { throw "manifest.json was not generated" }
+        $json = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        if ($json.Count -ne 2) { throw "manifest item count mismatch: $($json.Count)" }
+        if ($json[0].order -ne 1 -or $json[0].original_name -ne "画像, one.bin" -or $json[0].mime -ne "image/png") { throw "manifest item 0 mismatch" }
+        if ($json[1].order -ne 2 -or $json[1].original_name -ne "two image.dat" -or $json[1].mime -ne "image/jpeg") { throw "manifest item 1 mismatch" }
+    } finally {
+        Remove-RecordingShim $shim
+        Remove-Item $mediaRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Test-Case "Unknown attachment format is rejected" {
+    $bad = Join-Path $env:TEMP "codex_bad_$(Get-Random).txt"
+    [IO.File]::WriteAllText($bad, "not an image")
+    try {
+        $r = Invoke-Wrapper @("-Prompt", "inspect", "-Attachment", $bad)
+        if ($r.ExitCode -eq 0 -or $r.Output -notmatch "Unsupported or unrecognized") { throw $r.Output }
+    } finally { Remove-Item $bad -Force -ErrorAction SilentlyContinue }
 }
 
 # --------------------------------------------------
