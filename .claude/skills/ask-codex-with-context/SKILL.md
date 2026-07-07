@@ -87,16 +87,11 @@ git diff > $HOME/AppData/Local/Temp/_tmp_diff.txt
 
 #### 基本呼び出し (Windows + Claude Code)
 
-グローバルインストール想定 (`~/.claude/scripts/codex-wrapper.ps1`):
+この SKILL.md 自身のディレクトリ直下の `scripts/` を絶対 path に解決
+(通常 `$CLAUDE_SKILL_DIR/scripts/`) してから、そのパスを使う。
 
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-wrapper.ps1" -Prompt "質問文" -ContextFile "$HOME/AppData/Local/Temp/codex_ctx_....txt"
-```
-
-プロジェクトインストール想定 (`<proj>/scripts/codex-wrapper.ps1`) — wrapper パスはプロジェクト絶対パスに置換:
-
-```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "/path/to/proj/scripts/codex-wrapper.ps1" -Prompt "質問文" -ContextFile "$HOME/AppData/Local/Temp/codex_ctx_....txt"
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\codex-wrapper.ps1" -Prompt "質問文" -ContextFile "$HOME/AppData/Local/Temp/codex_ctx_....txt"
 ```
 
 #### PR レビュー用途 (`-Cd` + `-SandboxMode` 活用)
@@ -105,7 +100,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "/path/to/proj/scripts/codex
 `-Cd <repo path>` と `-SandboxMode read-only` (= デフォルト) を渡す:
 
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-wrapper.ps1" -Prompt "PR レビューお願いします" -ContextFile "$HOME/AppData/Local/Temp/codex_ctx_....txt" -Cd "C:/path/to/repo"
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\codex-wrapper.ps1" -Prompt "PR レビューお願いします" -ContextFile "$HOME/AppData/Local/Temp/codex_ctx_....txt" -Cd "C:/path/to/repo"
 ```
 
 - `-Cd` は `-WorkDir` のエイリアス (codex CLI 本体の `--cd` / `-C` と同じ命名)
@@ -115,7 +110,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex
 #### Linux/Mac native 環境
 
 ```bash
-bash "$HOME/.claude/scripts/codex-wrapper.sh" --prompt "質問文" --context-file "/tmp/codex_ctx_....txt"
+bash "<scripts-root>/codex-wrapper.sh" --prompt "質問文" --context-file "/tmp/codex_ctx_....txt"
 ```
 
 同等オプションは `--cd` / `--sandbox`。

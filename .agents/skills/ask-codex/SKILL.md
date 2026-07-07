@@ -1,24 +1,31 @@
 ---
 name: ask-codex
-description: Codex CLIに質問を委任してセカンドオピニオンを取得する。ユーザーがask-codexを指定した場合や、Codexへ質問するよう求めた場合に使う。
+description: Codex CLIに設計判断、バグ調査、実装方針などのセカンドオピニオンを求める。ユーザーが「Codexに聞いて」「ask-codex」など、Codex CLIへの問い合わせを明示した場合に使う。ファイルやdiffを渡す場合はask-codex-with-contextを使う。
 ---
 
-# ask-codex
+# Codex CLIに質問する
 
-現在のユーザー要求をCodex CLIへ委任する。
+ユーザーの質問を改変せず、wrapperへ渡す。現在の作業ディレクトリを前提にせず、この `SKILL.md` のディレクトリ直下の `scripts/` を絶対パスへ解決する。
 
-1. workspaceの`scripts/codex-wrapper.*`が存在すればそれを使う。存在しなければ
-   `{{SCRIPTS_ROOT}}/codex-wrapper.*`を使う。
-2. Windowsでは次を実行する。
-   ```powershell
-   powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\codex-wrapper.ps1" -Prompt "<質問>"
-   ```
-3. Linux、macOS、WSLでは次を実行する。
-   ```bash
-   bash "<scripts-root>/codex-wrapper.sh" --prompt "<質問>"
-   ```
-4. 必ずwrapperを実行し、自分自身で質問へ回答して代替しない。
-5. `[CODEX_WRAPPER_ERROR]`が出た場合は失敗としてその内容を報告する。
-6. 成功時はCodexの回答を示し、末尾に`*via Codex CLI*`と記載する。
+## 手順
 
-追加のtool権限や`--dangerously-skip-permissions`を要求しない。実行時のpermission確認に従う。
+1. 質問が空なら内容を確認する。
+2. OSに合うwrapperを、シェル演算子や出力リダイレクトを組み合わせず、単独のコマンドとして実行する。
+3. Windowsでは次を使う。
+
+```powershell
+powershell -ExecutionPolicy Bypass -NoProfile -File "<解決したscripts>\codex-wrapper.ps1" -Prompt "質問"
+```
+
+4. Linux/macOSでは次を使う。
+
+```bash
+bash "<解決したscripts>/codex-wrapper.sh" --prompt "質問"
+```
+
+5. wrapperが返す失敗sentinelをCodexの回答として扱わず、呼び出し失敗として提示する。
+6. 成功時は回答を「Codex CLIの回答」として引用し、必要なら自身の見解との差分を短く補足する。
+
+wrapperはCodex CLIの `-SandboxMode` を既定の `read-only` で呼ぶ。明示的にmodeを渡そうとしない。
+
+モデルをユーザーが指定した場合だけ `-Model` / `--model` を追加する。モデル名を推測しない。
