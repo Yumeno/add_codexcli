@@ -34,11 +34,20 @@ if mkdir "$destination_root/skills/.permission-probe" 2>/dev/null; then
     rmdir "$destination_root/skills/.permission-probe"
     printf 'SKIP: read-only destination enforcement is unavailable on this host\n'
 else
-    if bash "$installer" "$destination_root" >/dev/null 2>&1; then
+    err_out="$(mktemp "${TMPDIR:-/tmp}/installer_err.XXXXXX")"
+    if bash "$installer" "$destination_root" >/dev/null 2>"$err_out"; then
         printf 'Expected installer failure for read-only skills directory\n' >&2
+        rm -f -- "$err_out"
         exit 1
     fi
     test -f "$destination_root/skills/ask-codex/previous.txt"
+    grep -Fq 'Failed to promote new skill:' "$err_out" || {
+        printf 'Expected "Failed to promote new skill:" diagnostic in stderr\n' >&2
+        cat "$err_out" >&2
+        rm -f -- "$err_out"
+        exit 1
+    }
+    rm -f -- "$err_out"
 fi
 chmod 755 "$destination_root/skills"
 
