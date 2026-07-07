@@ -1,11 +1,11 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$DestinationRoot = (Join-Path $env:USERPROFILE ".gemini\antigravity-cli")
+    [string]$DestinationRoot = (Join-Path $env:USERPROFILE ".claude")
 )
 
 $ErrorActionPreference = "Stop"
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
-$SourceSkillsRoot = Join-Path $RepositoryRoot ".agents\skills"
+$SourceSkillsRoot = Join-Path $RepositoryRoot ".claude\skills"
 $DestinationSkillsRoot = Join-Path $DestinationRoot "skills"
 $SkillNames = @("ask-codex", "ask-codex-with-context", "codex-implement", "list-codex-models", "set-codex-model")
 
@@ -51,5 +51,5 @@ try {
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 }
 
-Write-Output "Antigravity CLI用Skillをインストールしました。"
+Write-Output "Claude Code用Skillをインストールしました。"
 Write-Output "skills=$DestinationSkillsRoot"

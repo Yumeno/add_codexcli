@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
-$Installer = Join-Path (Split-Path $PSScriptRoot -Parent) "install-for-antigravity.ps1"
-$TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("add_codexcli_antigravity_日本語_" + [guid]::NewGuid().ToString("N"))
-$DestinationRoot = Join-Path $TempRoot "install root"
+$Installer = Join-Path (Split-Path $PSScriptRoot -Parent) "install-for-claude-code.ps1"
+$TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("add_codexcli_claude_code_日本語_" + [guid]::NewGuid().ToString("N"))
+$DestinationRoot = Join-Path $TempRoot "claude home"
 $SkillNames = @("ask-codex", "ask-codex-with-context", "codex-implement", "list-codex-models", "set-codex-model")
 $Passed = 0
 $Failed = 0

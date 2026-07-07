@@ -3,8 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd -- "$script_dir/.." && pwd)"
-source_skills_root="$repository_root/.agents/skills"
-destination_root="${1:-${HOME:?HOME is not set}/.gemini/antigravity-cli}"
+source_skills_root="$repository_root/.claude/skills"
+destination_root="${1:-${HOME:?HOME is not set}/.claude}"
 skill_names=(ask-codex ask-codex-with-context codex-implement list-codex-models set-codex-model)
 
 for name in "${skill_names[@]}"; do
@@ -46,5 +46,5 @@ for name in "${skill_names[@]}"; do
     rm -rf -- "$old_dest"
 done
 
-printf 'Antigravity CLI用Skillをインストールしました。\n'
+printf 'Claude Code用Skillをインストールしました。\n'
 printf 'skills=%s\n' "$destination_root/skills"
