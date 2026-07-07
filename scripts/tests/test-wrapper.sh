@@ -7,6 +7,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WRAPPER="$SCRIPT_DIR/scripts/codex-wrapper.sh"
 
+# Redirect wrapper config to a test-owned temp path so we don't touch
+# $HOME/.agents/add_codexcli/codex-wrapper.conf during tests.
+CODEX_WRAPPER_CONFIG_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex_wrapper_test_conf.XXXXXX")"
+export CODEX_WRAPPER_CONFIG="$CODEX_WRAPPER_CONFIG_TEST_DIR/codex-wrapper.conf"
+
+cleanup_test_conf() {
+    rm -rf -- "$CODEX_WRAPPER_CONFIG_TEST_DIR"
+}
+trap cleanup_test_conf EXIT
+
 PASSED=0
 FAILED=0
 TOTAL=0
@@ -113,21 +123,7 @@ fi
 echo ""
 echo "[Group 4a: Model resolution & config file]"
 
-# Save/restore any pre-existing config so the test doesn't clobber it.
-CONF_PATH="$SCRIPT_DIR/scripts/codex-wrapper.conf"
-CONF_BACKUP=""
-if [[ -f "$CONF_PATH" ]]; then
-    CONF_BACKUP=$(mktemp "${TMPDIR:-/tmp}/codex_conf_bak_XXXXXX")
-    cp "$CONF_PATH" "$CONF_BACKUP"
-fi
-restore_conf() {
-    if [[ -n "$CONF_BACKUP" ]]; then
-        mv "$CONF_BACKUP" "$CONF_PATH"
-    else
-        rm -f "$CONF_PATH"
-    fi
-}
-trap restore_conf EXIT
+CONF_PATH="$CODEX_WRAPPER_CONFIG"
 
 test_case "--set-model writes config and exits 0"
 rm -f "$CONF_PATH"

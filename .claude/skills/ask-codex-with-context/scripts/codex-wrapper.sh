@@ -16,6 +16,8 @@
 #
 # Config subcommands (do not invoke codex):
 #   --set-model NAME  Persist NAME as the default model in codex-wrapper.conf
+#                     Default config path: $HOME/.agents/add_codexcli/codex-wrapper.conf
+#                     Override via $CODEX_WRAPPER_CONFIG
 #   --show-model      Print the currently resolved model and its source, then exit
 
 set -euo pipefail
@@ -63,10 +65,8 @@ SANDBOX_MODES_RE='^(read-only|workspace-write|danger-full-access)$'
 # Max context size in bytes before warning (100KB)
 MAX_CONTEXT_SIZE=102400
 
-# Config file lives next to this script. Same relative position whether the
-# install is project-local (<proj>/scripts/) or global (~/.claude/scripts/).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/codex-wrapper.conf"
+# Shared config file used by project-local and bundled wrapper copies.
+CONFIG_FILE="${CODEX_WRAPPER_CONFIG:-$HOME/.agents/add_codexcli/codex-wrapper.conf}"
 
 # Single regex used to validate every model name we touch, regardless of source
 # (CLI flag, env var, conf file, --set-model). The wrapper announces the model
@@ -140,21 +140,10 @@ read_config_model() {
 # --- Subcommand: --set-model (write config) ---
 if [[ -n "$SET_MODEL" ]]; then
     validate_model "$SET_MODEL" "--set-model"
-    cat > "$CONFIG_FILE" <<CONFEOF
-# codex-wrapper.conf
-# Default options for codex-wrapper.sh / codex-wrapper.ps1.
-# Edit this file directly, or use:
-#   bash codex-wrapper.sh --set-model <name>
-#
-# Lookup priority for the model:
-#   1. --model / -Model CLI flag
-#   2. \$CODEX_WRAPPER_MODEL environment variable
-#   3. this file (model=...)
-#   4. unset (codex CLI default)
-
-model=$SET_MODEL
-CONFEOF
-    echo "Saved model='$SET_MODEL' to $CONFIG_FILE"
+    CONFIG_DIR="$(dirname "$CONFIG_FILE")"
+    mkdir -p -- "$CONFIG_DIR" || die 1 "Unable to create config directory: $CONFIG_DIR"
+    printf '# codex-wrapper.conf\nmodel=%s\n' "$SET_MODEL" >"$CONFIG_FILE" || die 1 "Unable to write config: $CONFIG_FILE"
+    printf "Saved model='%s' to %s\n" "$SET_MODEL" "$CONFIG_FILE"
     exit 0
 fi
 

@@ -4,6 +4,10 @@
 $ScriptDir = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $Wrapper = Join-Path (Join-Path $ScriptDir "scripts") "codex-wrapper.ps1"
 
+$CodexWrapperConfigTestDir = Join-Path $env:TEMP ("codex_wrapper_test_conf_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $CodexWrapperConfigTestDir -Force | Out-Null
+$env:CODEX_WRAPPER_CONFIG = Join-Path $CodexWrapperConfigTestDir "codex-wrapper.conf"
+
 $passed = 0
 $failed = 0
 $total = 0
@@ -135,12 +139,7 @@ Test-Case "Prompt starting with dash does not break codex" {
 Write-Host ""
 Write-Host "[Group 4a: Model resolution & config file]" -ForegroundColor Yellow
 
-$ConfPath = Join-Path (Join-Path $ScriptDir "scripts") "codex-wrapper.conf"
-$ConfBackup = ""
-if (Test-Path $ConfPath) {
-    $ConfBackup = Join-Path $env:TEMP "codex_conf_bak_$(Get-Random).txt"
-    Copy-Item $ConfPath $ConfBackup -Force
-}
+$ConfPath = $env:CODEX_WRAPPER_CONFIG
 
 Test-Case "-SetModel writes config and exits 0" {
     if (Test-Path $script:ConfPath) { Remove-Item $script:ConfPath -Force }
@@ -878,11 +877,9 @@ Test-Case "Errors on missing context file" {
 }
 
 # --------------------------------------------------
-# Restore original config (if any) before reporting results.
+# Cleanup test config directory before reporting results.
 if (Test-Path $ConfPath) { Remove-Item $ConfPath -Force }
-if ($ConfBackup -and (Test-Path $ConfBackup)) {
-    Move-Item $ConfBackup $ConfPath -Force
-}
+Remove-Item -LiteralPath $CodexWrapperConfigTestDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "=== Results ===" -ForegroundColor Cyan
