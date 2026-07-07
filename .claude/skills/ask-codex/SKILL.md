@@ -36,10 +36,11 @@ allowed-tools: Bash Read
 
 #### Windows + Claude Code (主用途)
 
-グローバルインストール想定 (`~/.claude/scripts/codex-wrapper.ps1`):
+この SKILL.md 自身のディレクトリ直下の `scripts/` を絶対 path に解決
+(通常 `$CLAUDE_SKILL_DIR/scripts/`) してから、そのパスを使う。
 
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-wrapper.ps1" -Prompt "質問文"
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\codex-wrapper.ps1" -Prompt "質問文"
 ```
 
 プロンプトに長い文を渡す場合も、ラッパーが stdin 経由で codex に渡すためコマンドライン長制限は気にしなくてよい。
@@ -48,7 +49,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex
 #### Linux/Mac native 環境
 
 ```bash
-bash "$HOME/.claude/scripts/codex-wrapper.sh" --prompt "質問文"
+bash "<scripts-root>/codex-wrapper.sh" --prompt "質問文"
 ```
 
 ### 3. Codex の回答を表示する

@@ -29,22 +29,24 @@ allowed-tools: Bash
 > **素の 1 コマンドで直接呼ぶこと。** 変数代入の前置やコマンド置換 (`OUTPUT=$(...)`) は
 > 許可傘から外れて承認要求が出る。stdout はそのまま tool result に返るので捕捉不要。
 > helper のパスは **必ず double quote で囲む**。
+> この SKILL.md 自身のディレクトリ直下の `scripts/` を絶対 path に解決
+> (通常 `$CLAUDE_SKILL_DIR/scripts/`) してから、そのパスを使う。
 
 #### Windows + Claude Code (主用途)
 
 オプションなし (名前リスト):
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-codex-models.ps1"
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\list-codex-models.ps1"
 ```
 
 オフライン (`-Bundled`):
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-codex-models.ps1" -Bundled
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\list-codex-models.ps1" -Bundled
 ```
 
 raw JSON (`-Json`):
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-codex-models.ps1" -Json
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\list-codex-models.ps1" -Json
 ```
 
 `-Bundled` と `-Json` の併用も可。引数の組み合わせは `$ARGUMENTS` のキーワードに応じて選ぶ。
@@ -52,7 +54,7 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/list-
 #### Linux/Mac native 環境
 
 ```bash
-bash "$HOME/.claude/scripts/list-codex-models.sh"
+bash "<scripts-root>/list-codex-models.sh"
 ```
 
 オプション: `--bundled` / `--json`。

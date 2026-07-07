@@ -10,9 +10,8 @@ allowed-tools: Bash
 `codex-wrapper.conf` にデフォルトモデル名を保存し、以後 `-Model` / `--model` 未指定でも
 そのモデルが使われるようにします。引数なしで呼ぶと現状を表示します。
 
-設定ファイルは **ラッパースクリプトと同じディレクトリ** に置かれます:
-- プロジェクトインストール: `<proj>/scripts/codex-wrapper.conf`
-- グローバルインストール: `~/.claude/scripts/codex-wrapper.conf`
+設定ファイルの default は `$HOME/.agents/add_codexcli/codex-wrapper.conf` です。
+`CODEX_WRAPPER_CONFIG` 環境変数で上書きできます。
 
 > **解決順位（ラッパー側）:**
 > 1. `--model` / `-Model` CLI 引数
@@ -35,17 +34,19 @@ allowed-tools: Bash
 > **素の 1 コマンドで直接呼ぶこと。** 変数代入の前置やコマンド置換 (`OUTPUT=$(...)`) は
 > 許可傘から外れて承認要求が出る。stdout はそのまま tool result に返るので捕捉不要。
 > wrapper のパスは **必ず double quote で囲む**。
+> この SKILL.md 自身のディレクトリ直下の `scripts/` を絶対 path に解決
+> (通常 `$CLAUDE_SKILL_DIR/scripts/`) してから、そのパスを使う。
 
 #### Windows + Claude Code (主用途)
 
 **引数なし（現状表示）:**
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-wrapper.ps1" -ShowModel
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\codex-wrapper.ps1" -ShowModel
 ```
 
 **モデル名を渡して保存:**
 ```bash
-powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex-wrapper.ps1" -SetModel "gpt-5.5"
+powershell -ExecutionPolicy Bypass -NoProfile -File "<scripts-root>\codex-wrapper.ps1" -SetModel "gpt-5.5"
 ```
 
 不正な文字を含むモデル名は wrapper 側で拒否される (`^[A-Za-z0-9._:/-]+$` のみ許可)。
@@ -53,8 +54,8 @@ powershell -ExecutionPolicy Bypass -NoProfile -File "$HOME/.claude/scripts/codex
 #### Linux/Mac native 環境
 
 ```bash
-bash "$HOME/.claude/scripts/codex-wrapper.sh" --show-model
-bash "$HOME/.claude/scripts/codex-wrapper.sh" --set-model "gpt-5.5"
+bash "<scripts-root>/codex-wrapper.sh" --show-model
+bash "<scripts-root>/codex-wrapper.sh" --set-model "gpt-5.5"
 ```
 
 ### 2. 失敗検知 (重要)
