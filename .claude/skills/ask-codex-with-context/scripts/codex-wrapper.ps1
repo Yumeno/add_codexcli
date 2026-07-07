@@ -17,6 +17,8 @@
 #
 # Config subcommands (do not invoke codex):
 #   -SetModel NAME  Persist NAME as the default model in codex-wrapper.conf
+#                    Default config path: %USERPROFILE%\.agents\add_codexcli\codex-wrapper.conf
+#                    Override via $env:CODEX_WRAPPER_CONFIG
 #   -ShowModel      Print the currently resolved model and its source, then exit
 
 param(
@@ -80,9 +82,12 @@ if (-not [string]::IsNullOrWhiteSpace($Cd)) {
 # Max context size in bytes before warning (100KB)
 $MaxContextSize = 102400
 
-# Config file lives next to this script. Same relative position whether the
-# install is project-local (<proj>\scripts\) or global (~\.claude\scripts\).
-$ConfigFile = Join-Path $PSScriptRoot "codex-wrapper.conf"
+# Shared config file used by project-local and bundled wrapper copies.
+$ConfigFile = if ($env:CODEX_WRAPPER_CONFIG) {
+    $env:CODEX_WRAPPER_CONFIG
+} else {
+    Join-Path $env:USERPROFILE ".agents\add_codexcli\codex-wrapper.conf"
+}
 
 # Single regex used to validate every model name we touch, regardless of source
 # (CLI flag, env var, conf file, -SetModel). The wrapper announces the model
@@ -126,13 +131,21 @@ if (-not [string]::IsNullOrWhiteSpace($SetModel)) {
 # Lookup priority for the model:
 #   1. --model / -Model CLI flag
 #   2. `$CODEX_WRAPPER_MODEL environment variable
-#   3. this file (model=...)
-#   4. unset (codex CLI default)
+#   3. `$CODEX_WRAPPER_CONFIG env override or default `$HOME/.agents/add_codexcli/codex-wrapper.conf
+#   4. codex CLI default
 
 model=$SetModel
 "@
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($ConfigFile, $confContent, $utf8NoBom)
+    try {
+        $configDir = Split-Path -Parent $ConfigFile
+        if ($configDir -and -not (Test-Path -LiteralPath $configDir)) {
+            New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+        }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($ConfigFile, $confContent, $utf8NoBom)
+    } catch {
+        Fail 1 ("Unable to write config: {0}" -f $ConfigFile)
+    }
     Write-Output "Saved model='$SetModel' to $ConfigFile"
     exit 0
 }
