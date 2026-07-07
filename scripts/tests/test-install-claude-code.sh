@@ -3,10 +3,10 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd -- "$script_dir/../.." && pwd)"
-installer="$repository_root/scripts/install-for-antigravity.sh"
+installer="$repository_root/scripts/install-for-claude-code.sh"
 target="$(mktemp -d)"
 trap 'rm -rf -- "$target"' EXIT
-destination_root="$target/install root"
+destination_root="$target/claude home"
 skill_names=(ask-codex ask-codex-with-context codex-implement list-codex-models set-codex-model)
 
 mkdir -p -- "$destination_root/skills/unrelated" "$destination_root/skills/ask-codex"
@@ -48,4 +48,4 @@ bash "$installer" "$destination_root" >/dev/null
 test -z "$(find "$destination_root" -maxdepth 1 -type d -name '.add-codexcli-stage-*' -print -quit)"
 test -z "$(find "$destination_root/skills" -maxdepth 1 \( -name '*.new' -o -name '*.old' \) -print -quit)"
 
-printf 'PASS: Antigravity CLI installer\n'
+printf 'PASS: Claude Code installer\n'
