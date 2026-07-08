@@ -61,8 +61,62 @@ try {
         & powershell -ExecutionPolicy Bypass -NoProfile -File $Installer -DestinationRoot $DestinationRoot | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "install with stale .new exited with $LASTEXITCODE" }
     }
-    Test-Case "skips read-only rollback on Windows" {
-        Write-Host "SKIP read-only destination enforcement is unavailable on this host"
+    Test-Case "read-only skills directory preserves prior content on failure" {
+        # Regression coverage for issue #30 (Windows-side rollback path
+        # verification). Denies Write on the skills\ directory to force the
+        # installer's Move-Item step to fail, then checks that the prior
+        # ask-codex content survives (either via the try/catch rollback or
+        # because the rename never started).
+        $skillsDir = Join-Path $DestinationRoot "skills"
+        $askCodexDir = Join-Path $skillsDir "ask-codex"
+        $sentinelFile = Join-Path $askCodexDir "previous.txt"
+        [IO.File]::WriteAllText($sentinelFile, "previous")
+
+        $originalAcl = Get-Acl -LiteralPath $skillsDir
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $denyRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $currentUser,
+            [System.Security.AccessControl.FileSystemRights]::Write,
+            [System.Security.AccessControl.InheritanceFlags]::None,
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Deny
+        )
+        $denyAcl = Get-Acl -LiteralPath $skillsDir
+        $denyAcl.AddAccessRule($denyRule)
+
+        # Some hosts (e.g. Administrator with SeRestorePrivilege) bypass ACL
+        # deny; probe first and SKIP if enforcement doesn't stick. Same
+        # SKIP pattern the bash test uses.
+        Set-Acl -LiteralPath $skillsDir -AclObject $denyAcl -ErrorAction SilentlyContinue
+        $enforcementProbe = Join-Path $skillsDir ".permission-probe.txt"
+        $enforcementActive = $true
+        try {
+            [IO.File]::WriteAllText($enforcementProbe, "probe")
+            $enforcementActive = $false
+            Remove-Item -LiteralPath $enforcementProbe -Force -ErrorAction SilentlyContinue
+        } catch {
+            # Write blocked as expected; enforcement is active.
+        }
+
+        try {
+            if (-not $enforcementActive) {
+                Write-Host "SKIP read-only destination enforcement is unavailable on this host"
+                return
+            }
+            $installerFailed = $false
+            try {
+                & powershell -ExecutionPolicy Bypass -NoProfile -File $Installer -DestinationRoot $DestinationRoot 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { $installerFailed = $true }
+            } catch {
+                $installerFailed = $true
+            }
+            if (-not $installerFailed) { throw "installer succeeded under Write-Deny ACL" }
+        } finally {
+            # Restore ACL before any assertion that reads the tree, so failures
+            # here don't leak into $TempRoot cleanup.
+            Set-Acl -LiteralPath $skillsDir -AclObject $originalAcl
+        }
+        if (-not (Test-Path -LiteralPath $sentinelFile)) { throw "previous skill content lost during failed promotion" }
     }
     Test-Case "cleans new and old promotion artifacts" {
         $skillArtifacts = @(Get-ChildItem -LiteralPath (Join-Path $DestinationRoot "skills") -Force | Where-Object { $_.Name -like "*.new" -or $_.Name -like "*.old" })
