@@ -802,7 +802,7 @@ Test-Case "Attachment list ignores whitespace-only lines" {
     }
 }
 
-Test-Case "Staged attachment remains valid after source is removed" {
+Test-Case "Staged attachment is independent of source file lifecycle" {
     $shim = New-RecordingShim
     $root = Join-Path $env:TEMP "codex_media_source_remove_$(Get-Random)"
     New-Item -ItemType Directory -Path $root | Out-Null

@@ -39,7 +39,11 @@ for name in "${skill_names[@]}"; do
         mv -- "$final_dest" "$old_dest"
     fi
     if ! mv -- "$new_dest" "$final_dest"; then
-        [[ ! -e "$old_dest" ]] || mv -- "$old_dest" "$final_dest"
+        if [[ -e "$old_dest" ]]; then
+            if ! mv -- "$old_dest" "$final_dest" 2>/dev/null; then
+                printf 'Rollback also failed for %s (leftover: %s)\n' "$name" "$old_dest" >&2
+            fi
+        fi
         printf 'Failed to promote new skill: %s\n' "$name" >&2
         exit 1
     fi
