@@ -50,6 +50,18 @@ function Get-SkillHelpers {
     }
 }
 
+function Get-SkillReferences {
+    param([string]$Skill)
+    switch ($Skill) {
+        "codex-implement" { return @("image-generation.md") }
+        "ask-codex" { return @() }
+        "ask-codex-with-context" { return @() }
+        "list-codex-models" { return @() }
+        "set-codex-model" { return @() }
+        default { throw "Unknown skill: $Skill" }
+    }
+}
+
 function Test-BytesEqual {
     param([string]$Left, [string]$Right)
     if (-not [IO.File]::Exists($Left) -or -not [IO.File]::Exists($Right)) {
@@ -72,7 +84,9 @@ function Sync-Skill {
     param([string]$HostDir, [string]$Skill)
     $skillDir = Join-Path (Join-Path (Join-Path $RootDir $HostDir) "skills") $Skill
     $scriptsDir = Join-Path $skillDir "scripts"
+    $referencesDir = Join-Path $skillDir "references"
     $helpers = @(Get-SkillHelpers $Skill)
+    $references = @(Get-SkillReferences $Skill)
 
     if (-not [IO.Directory]::Exists($skillDir)) {
         throw "Skill directory not found: $(Get-DisplayPath $skillDir)"
@@ -93,14 +107,39 @@ function Sync-Skill {
         Copy-Item -LiteralPath $source -Destination (Join-Path $scriptsDir $helper) -Force
     }
 
-    Write-Host ("synced {0}: {1} files" -f (Get-DisplayPath $skillDir), $helpers.Count)
+    if ($references.Count -gt 0) {
+        if (-not [IO.Directory]::Exists($referencesDir)) {
+            New-Item -ItemType Directory -Path $referencesDir | Out-Null
+        }
+        Get-ChildItem -LiteralPath $referencesDir -File | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
+
+        foreach ($reference in $references) {
+            $source = Join-Path (Join-Path (Join-Path $RootDir "docs") "references") $reference
+            if (-not [IO.File]::Exists($source)) {
+                throw "Source reference not found: docs/references/$reference"
+            }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $referencesDir $reference) -Force
+        }
+    } elseif ([IO.Directory]::Exists($referencesDir)) {
+        Remove-Item -LiteralPath $referencesDir -Recurse -Force
+    }
+
+    if ($references.Count -gt 0) {
+        Write-Host ("synced {0}: {1} scripts, {2} reference" -f (Get-DisplayPath $skillDir), $helpers.Count, $references.Count)
+    } else {
+        Write-Host ("synced {0}: {1} scripts" -f (Get-DisplayPath $skillDir), $helpers.Count)
+    }
 }
 
 function Test-Skill {
     param([string]$HostDir, [string]$Skill)
     $skillDir = Join-Path (Join-Path (Join-Path $RootDir $HostDir) "skills") $Skill
     $scriptsDir = Join-Path $skillDir "scripts"
+    $referencesDir = Join-Path $skillDir "references"
     $helpers = @(Get-SkillHelpers $Skill)
+    $references = @(Get-SkillReferences $Skill)
     $ok = $true
 
     if (-not [IO.Directory]::Exists($scriptsDir)) {
@@ -118,6 +157,35 @@ function Test-Skill {
             [Console]::Error.WriteLine("out of sync: $(Get-DisplayPath $dest)")
             $ok = $false
         }
+    }
+
+    if ($references.Count -gt 0) {
+        if (-not [IO.Directory]::Exists($referencesDir)) {
+            [Console]::Error.WriteLine("references directory missing: $(Get-DisplayPath $skillDir)")
+            $ok = $false
+        } else {
+            foreach ($reference in $references) {
+                $source = Join-Path (Join-Path (Join-Path $RootDir "docs") "references") $reference
+                $dest = Join-Path $referencesDir $reference
+                if (-not [IO.File]::Exists($source)) {
+                    throw "Source reference not found: docs/references/$reference"
+                }
+                if (-not (Test-BytesEqual $source $dest)) {
+                    [Console]::Error.WriteLine("out of sync: $(Get-DisplayPath $dest)")
+                    $ok = $false
+                }
+            }
+
+            Get-ChildItem -LiteralPath $referencesDir -File | ForEach-Object {
+                if ($references -notcontains $_.Name) {
+                    [Console]::Error.WriteLine("unexpected bundled reference: $(Get-DisplayPath $_.FullName)")
+                    $ok = $false
+                }
+            }
+        }
+    } elseif ([IO.Directory]::Exists($referencesDir)) {
+        [Console]::Error.WriteLine("unexpected references directory: $(Get-DisplayPath $referencesDir)")
+        $ok = $false
     }
 
     Get-ChildItem -LiteralPath $scriptsDir -File | ForEach-Object {
