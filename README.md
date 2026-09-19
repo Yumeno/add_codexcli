@@ -207,6 +207,21 @@ Claude が Codex CLI を呼び出し、回答を取得して表示します。
 | `log`, `履歴` | `git log --oneline -20` |
 | ファイルパス（例: `src/main.ts`） | そのファイルの内容 |
 
+#### 入力経路
+
+wrapperは質問、テキストコンテキスト、画像添付を別の入力として扱います。
+
+| wrapper引数 | Codex CLIへの渡し方 | 意味 |
+|---|---|---|
+| `-Prompt` / `--prompt` | 位置引数 (argv) | Codexへの指示 |
+| `-Context` / `-ContextFile` / `--context` / `--context-file` | 標準入力 (stdin) | 追加のテキスト情報。バイナリ添付機能ではない |
+| `-Attachment` / `-AttachmentList` / `--attachment` / `--attachment-list` | 画像ごとの `-i` | PNG/JPEGの画像添付 |
+
+Codex CLI自体は`codex exec -`によるプロンプト全文のstdin入力にも対応しますが、本wrapperは
+「指示をargv、追加テキストをstdin、画像を`-i`」とする方式を採用しています。
+仕様書や指示文にファイルパスを書くことは、そのファイル内容をモデルへ添付することとは異なり、
+Codexが実行環境のツールで読み取る必要があります。
+
 #### 複数画像を添付
 
 Codex CLIの`-i`入力を使い、PNG/JPEGを複数指定できます。
@@ -223,17 +238,24 @@ bash scripts/codex-wrapper.sh --prompt "2枚を順番に比較して" \
 ```
 
 PowerShellの`-Attachment`は単一画像用です。複数画像は`-AttachmentList`を使います。
-`-AttachmentList` / `--attachment-list`では、UTF-8のpath一覧を1行1件で指定できます。
-wrapperはmagic bytesを確認し、ASCII一時領域へ`image-001.png`のような安全な名前でcopyしてから
-指定順に送信します。一時copyは成功・失敗・timeout時に削除され、元ファイルは変更しません。
+`-AttachmentList` / `--attachment-list`では、UTF-8のpath一覧を1行1件で指定できます
+（空行・空白のみの行は無視）。直接指定と一覧ファイルを併用した場合は、直接指定の画像群が先、
+一覧ファイルの画像群が後になり、各群の内部では指定順を保持します。
+wrapperはmagic bytesで実内容を識別し、内容がPNG/JPEGなら元の拡張子によらず正規の拡張子で
+ASCII一時領域へ`image-001.png`のような安全な名前でcopyしてから指定順に送信します。
+画像を装った未知形式は拒否します。一時copyは成功・通常エラー・timeoutの各経路で削除され、
+元ファイルは変更しません（OSによる強制終了時の残留は保証対象外。判断経緯は
+`docs/worklogs/2026-07-08-p3-hardening-follow-up.md`）。
 送信前にstderrへ件数、総byte数、manifest pathと各画像の順序・元ファイル名・staged path・
 MIME・サポート状態を表示します。
 
 | 形式 | 状態 |
 |---|---|
-| PNG | `probe-verified`（実画像の内容認識を確認済み） |
-| JPEG | `probe-verified`（実画像の内容認識を確認済み） |
-| PDF、音声、動画、その他 | `unsupported` |
+| PNG | `probe-verified`（実画像の内容認識を確認済み、2026-07-06） |
+| JPEG | `probe-verified`（実画像の内容認識を確認済み、2026-07-06） |
+| WebP等のその他の画像形式 | `unsupported`（allowlist対象外。Codex CLIやモデル側の対応とは別） |
+| PDF、DOCX等の文書 | `unsupported`（添付不可。テキスト抽出やページ画像化の結果を渡すか、Codexにパスを指定して解析を依頼する） |
+| 音声、動画 | `unsupported`（`-i`の対応形式ではない。文字起こしやフレーム抽出等の別経路を使う） |
 
 画像はOpenAIへ送信され、入力サイズに応じてtoken、利用枠、処理時間へ影響します。
 画像内の指示はuntrusted inputとして扱い、送信範囲や権限を拡大しません。
