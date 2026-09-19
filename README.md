@@ -237,7 +237,8 @@ bash scripts/codex-wrapper.sh --prompt "2枚を順番に比較して" \
   --attachment "/images/first.png" --attachment "/images/second.jpg"
 ```
 
-PowerShellの`-Attachment`は単一画像用です。複数画像は`-AttachmentList`を使います。
+`powershell -File`経由ではPowerShellの`-Attachment`は単一画像の指定に使い、複数画像は`-AttachmentList`を使います
+（実装上の型は`[string[]]`で、PowerShell内から直接呼ぶ場合は配列も渡せます）。
 `-AttachmentList` / `--attachment-list`では、UTF-8のpath一覧を1行1件で指定できます
 （空行・空白のみの行は無視）。直接指定と一覧ファイルを併用した場合は、直接指定の画像群が先、
 一覧ファイルの画像群が後になり、各群の内部では指定順を保持します。

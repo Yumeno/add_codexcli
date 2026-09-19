@@ -45,7 +45,8 @@ PDF や Office 文書等のパスを指示する場合、Codex がそのパス�
 ## 複数画像の指定と順序
 
 PowerShell の既定の呼び出し方である `powershell -File` から複数画像を渡す際は、UTF-8 のパス一覧
-(1 行 1 パス) を Write tool で作成し、`-AttachmentList` を使用する。`-Attachment` は単一画像用。
+(1 行 1 パス) を Write tool で作成し、`-AttachmentList` を使用する。`powershell -File` 経由では
+`-Attachment` は単一画像の指定に使う (実装上の型は `[string[]]` で、PowerShell 内から直接呼ぶ場合は配列も受け取る)。
 bash では `--attachment` を反復指定するか、`--attachment-list` を使用する。
 
 ```bash

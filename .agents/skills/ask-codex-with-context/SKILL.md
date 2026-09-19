@@ -72,7 +72,7 @@ PDFやOffice文書等のパスを指示する場合、Codexがそのパスへア
 
 ## 複数画像の指定と順序
 
-PowerShellの既定の呼び出し方である`powershell -File`から複数画像を渡す際は、UTF-8のパス一覧を作成し、`-AttachmentList`を使用する。`-Attachment`は単一画像用。bashでは`--attachment`を反復指定するか、`--attachment-list`を使用する。
+PowerShellの既定の呼び出し方である`powershell -File`から複数画像を渡す際は、UTF-8のパス一覧を作成し、`-AttachmentList`を使用する。`powershell -File`経由では`-Attachment`は単一画像の指定に使う(実装上の型は`[string[]]`で、PowerShell内から直接呼ぶ場合は配列も受け取る)。bashでは`--attachment`を反復指定するか、`--attachment-list`を使用する。
 
 - 現行wrapperで直接指定と一覧ファイルを併用した場合は、直接指定の画像群を先に、一覧ファイルの画像群を後に処理する。コマンド行上の指定位置にかかわらず、この順序となる。各群の内部では指定順を保持する。
 - 一覧ファイルは1行につき1パスとし、空行・空白のみの行は無視される。
