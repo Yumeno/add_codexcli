@@ -10,6 +10,7 @@ Issueに紐づかない作業は、`issue-NN`を作業内容を表す短い識�
 
 ## 記録一覧
 
+- [2026-09-19 Issue #44 画像生成ガイドの GPT Image 2.5 対応と E2E 実測](2026-09-19-issue-44-image-gen-2.5-e2e.md)
 - [2026-07-10 Codex CLI 画像生成・編集の応用テストと reference 文書整備](2026-07-10-image-gen-reference.md)
 - [2026-07-08 P3 hardening follow-up (issue #29, #30, #31, plus CI issue #40)](2026-07-08-p3-hardening-follow-up.md)
 - [2026-07-08 Issue #32 Skill bundled helpers refactor (Phase 1-4)](2026-07-08-issue-32-skill-bundled-helpers.md)
